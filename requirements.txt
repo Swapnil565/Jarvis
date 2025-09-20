@@ -1,0 +1,36 @@
+# JARVIS 3.0 Backend Requirements
+# Generated from pyproject.toml
+
+# Core Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Data Validation
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Database
+sqlalchemy==2.0.23
+alembic==1.13.0
+asyncpg==0.29.0
+
+# Caching & Message Queue
+redis==5.0.1
+celery==5.3.4
+
+# Supabase & Auth
+supabase==2.3.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# HTTP & File Handling
+httpx==0.25.2
+python-multipart==0.0.6
+aiofiles==23.2.1
+
+# Configuration & Logging
+python-dotenv==1.0.0
+loguru==0.7.2
+
+# Templates
+jinja2==3.1.2
