@@ -1,8 +1,11 @@
 """
-Monitoring module for JARVIS 3.0
+Utilities module for JARVIS 3.0 Backend
+Contains utility functions, helpers, and monitoring tools
 """
 
 from .metrics import (
+    get_health_metrics,
+    MetricsCollector,
     health_check,
     metrics,
     performance_monitor,
@@ -14,6 +17,8 @@ from .metrics import (
 )
 
 __all__ = [
+    "get_health_metrics",
+    "MetricsCollector",
     "health_check",
     "metrics", 
     "performance_monitor",
