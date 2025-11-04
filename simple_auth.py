@@ -1,6 +1,62 @@
 """
-Simple authentication endpoints using SQLite database
-For development and testing without complex dependencies
+=============================================================================
+JARVIS 3.0 - AUTHENTICATION MODULE (JWT-based User Auth)
+=============================================================================
+
+PURPOSE:
+--------
+Handles user registration, login, and JWT token-based authentication for
+securing API endpoints. Provides the authentication layer for JARVIS.
+
+RESPONSIBILITY:
+---------------
+- User registration (create new accounts with hashed passwords)
+- User login (validate credentials, issue JWT tokens)
+- Token validation (protect endpoints via get_current_user dependency)
+- Password hashing (SHA256 for security)
+- JWT token generation and verification
+
+DATA FLOW (Authentication Requests):
+------------------------------------
+REGISTRATION FLOW:
+1. POST /api/v1/auth/register with {"username": "user", "password": "pass"}
+2. Validate username doesn't exist (check simple_db.py users table)
+3. Hash password with SHA256 + salt
+4. Insert user into database via db.create_user()
+5. Generate JWT token with user_id + username payload
+6. Return {"access_token": "jwt...", "token_type": "bearer", "user": {...}}
+
+LOGIN FLOW:
+1. POST /api/v1/auth/login with {"username": "user", "password": "pass"}
+2. Fetch user from database via db.get_user_by_username()
+3. Hash provided password and compare with stored hash
+4. If match: generate JWT token with 24-hour expiry
+5. Return {"access_token": "jwt...", "token_type": "bearer", "user": {...}}
+6. If no match: raise 401 Unauthorized
+
+PROTECTED ENDPOINT FLOW:
+1. Client sends request with "Authorization: Bearer <JWT_TOKEN>" header
+2. Endpoint uses Depends(get_current_user) dependency
+3. get_current_user() extracts token from header
+4. Verify token signature and expiry with jwt.decode()
+5. Extract user_id from token payload
+6. Fetch user from database to ensure still exists
+7. Return user dict to endpoint handler
+8. If invalid: raise 401 Unauthorized
+
+DEPENDENCIES:
+-------------
+- simple_db.py: User database operations (create_user, get_user_by_username, get_user_by_id)
+- PyJWT library: JWT token encoding/decoding
+- hashlib: SHA256 password hashing
+- FastAPI: HTTPException for auth errors
+
+SECURITY NOTES:
+---------------
+- Passwords hashed with SHA256 (NOT stored as plaintext)
+- JWT tokens expire after 24 hours
+- SECRET_KEY from environment variable (changeable in production)
+- Token validation on every protected endpoint request
 """
 
 from fastapi import APIRouter, HTTPException, status, Depends

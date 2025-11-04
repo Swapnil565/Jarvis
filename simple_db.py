@@ -1,6 +1,63 @@
 """
-Simple SQLite database setup for JARVIS 3.0 development
-Works without external dependencies for testing purposes
+=============================================================================
+JARVIS 3.0 - USER DATABASE MODULE (SQLite User Management)
+=============================================================================
+
+PURPOSE:
+--------
+Manages the users table in SQLite for authentication. Stores user accounts,
+credentials (hashed passwords), and user metadata. This is the ONLY file
+that directly interacts with the users database (jarvis_dev.db).
+
+RESPONSIBILITY:
+---------------
+- Initialize users table in SQLite (id, email, username, password_hash, created_at)
+- Create new users (INSERT operations)
+- Retrieve users by username or ID (SELECT operations)
+- Update user information (UPDATE operations)
+- Password hash storage (SHA256 hashed passwords)
+
+DATA FLOW (User Operations):
+-----------------------------
+CREATE USER FLOW:
+1. simple_auth.py calls db.create_user(email, username, password_hash)
+2. This module connects to jarvis_dev.db SQLite database
+3. Execute INSERT INTO users (email, username, password_hash, created_at)
+4. Commit transaction and return user_id
+5. Close database connection (context manager ensures cleanup)
+
+FETCH USER FLOW:
+1. simple_auth.py calls db.get_user_by_username(username) during login
+2. Connect to jarvis_dev.db
+3. Execute SELECT * FROM users WHERE username = ?
+4. Fetch one row from results
+5. Convert row tuple to dictionary with column names
+6. Return user dict {id, email, username, password_hash, created_at} or None
+
+VERIFY USER EXISTS FLOW:
+1. simple_auth.py calls db.get_user_by_id(user_id) during token validation
+2. Connect to jarvis_dev.db
+3. Execute SELECT * FROM users WHERE id = ?
+4. Return user dict or None if not found
+
+DATABASE SCHEMA:
+----------------
+Table: users
+- id (INTEGER PRIMARY KEY AUTOINCREMENT)
+- email (TEXT UNIQUE NOT NULL)
+- username (TEXT UNIQUE NOT NULL)
+- password_hash (TEXT NOT NULL) - SHA256 hashed, NOT plaintext
+- created_at (TEXT) - ISO format timestamp
+
+DEPENDENCIES:
+-------------
+- sqlite3: Python standard library for SQLite operations
+- hashlib: SHA256 password hashing (used in simple_auth.py)
+- datetime: Timestamp generation for created_at field
+
+USED BY:
+--------
+- simple_auth.py: User registration, login, token validation
 """
 
 import sqlite3

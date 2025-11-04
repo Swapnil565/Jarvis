@@ -237,6 +237,10 @@ config.json
 *.log
 logs/
 
+# Test files (temporary)
+test_*.py
+*_test.py
+
 # AI/ML Model files (often large)
 *.pkl
 *.pickle
