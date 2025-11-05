@@ -654,6 +654,41 @@ async def rate_intervention(
             detail=f"Failed to rate intervention: {str(e)}"
         )
 
+# ==================== WORKFLOW ORCHESTRATION ENDPOINTS (DAY 5) ====================
+
+@app.post("/api/workflow/daily")
+async def run_daily_workflow_endpoint(current_user: dict = Depends(get_current_user)):
+    """Trigger the daily workflow for the current user (pattern detection + forecast + interventions)."""
+    from agents.orchestrator import orchestrator
+    
+    try:
+        result = await orchestrator.run_daily_workflow(current_user["id"])
+        return {
+            "message": "Daily workflow completed",
+            "result": result
+        }
+    except Exception as e:
+        logger.error(f"Failed to run daily workflow: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to run daily workflow: {str(e)}"
+        )
+
+@app.get("/api/workflow/status")
+async def get_workflow_status_endpoint(current_user: dict = Depends(get_current_user)):
+    """Get the status of the last workflow execution for the current user."""
+    from agents.orchestrator import orchestrator
+    
+    try:
+        status_info = orchestrator.get_workflow_status(current_user["id"])
+        return status_info
+    except Exception as e:
+        logger.error(f"Failed to get workflow status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get workflow status: {str(e)}"
+        )
+
 # ==================== OLD ENDPOINTS (TO BE REMOVED) ====================
 
 @app.post("/query")

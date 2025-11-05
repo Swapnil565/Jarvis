@@ -224,13 +224,51 @@
                     └──────────────────────────┘
 ```
 
+### Agent Orchestration (Day 5) ✅
+
+The **AgentOrchestrator** coordinates all 4 agents into coherent workflows:
+
+#### Daily Workflow (Scheduled for 2am)
+```
+PatternDetector → Forecaster → Interventionist
+                    ↓
+            Results Cached
+```
+- **Target:** <10 seconds execution time
+- **Triggers:** Scheduled daily analysis
+- **Output:** Comprehensive insights package
+
+#### Event-Triggered Workflow (Real-time)
+```
+New Event → Quick Intervention Check
+```
+- **Target:** <2 seconds latency
+- **Triggers:** After every event logging
+- **Output:** Immediate feedback (if urgent)
+
+#### API Endpoints
+```python
+# Trigger manual daily workflow
+POST /api/workflow/daily
+→ {"success": true, "patterns_detected": 5, "interventions_triggered": 2}
+
+# Check workflow status
+GET /api/workflow/status
+→ {"last_daily_run": "2024-01-10T02:00:00", "cached_data_available": true}
+```
+
+#### Caching Strategy
+- In-memory cache of workflow results
+- Pattern data, forecast, and interventions
+- Serves quick queries without re-computation
+- Cache age tracked for freshness
+
 ### Scheduling (Day 6)
 
 - **Real-time:** DataCollectorAgent on every event
-- **Every 24 hours:** PatternDetectorAgent (nightly analysis)
-- **Every 24 hours:** ForecasterAgent (daily forecast)
-- **Every 6 hours:** InterventionistAgent (check state)
-- **Manual:** All agents via API endpoints
+- **Event-triggered:** Quick intervention check after every event (<2s)
+- **Daily (2am):** Full workflow - PatternDetector → Forecaster → Interventionist
+- **Manual:** All agents and workflows via API endpoints
 
 ---
 
