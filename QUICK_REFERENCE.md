@@ -18,6 +18,8 @@
 │  │ • POST /api/events/quick    (quick-tap, no LLM)          │  │
 │  │ • GET  /api/events          (list with filters)          │  │
 │  │ • GET  /api/events/today    (dashboard status)           │  │
+│  │ • POST /api/insights/generate (pattern detection)        │  │
+│  │ • POST /api/forecast         (capacity predictions)      │  │
 │  └──────────────────────────────────────────────────────────┘  │
 └──────────────┬──────────────────────────────────┬───────────────┘
                │                                  │
@@ -55,11 +57,11 @@
         │ pattern_detector │  │   forecaster     │  │ interventionist  │
         │   (Agent 2)      │  │   (Agent 3)      │  │   (Agent 4)      │
         │                  │  │                  │  │                  │
-        │ Correlations     │  │ Capacity         │  │ Warnings         │
-        │ Trends           │  │ Predictions      │  │ Suggestions      │
-        │ Anomalies        │  │ Burnout Risk     │  │ Insights         │
+        │ Correlations     │  │ ARIMA/Prophet    │  │ Warnings         │
+        │ Trends           │  │ Burnout Risk     │  │ Suggestions      │
+        │ Anomalies        │  │ 7-day Forecast   │  │ Insights         │
         │                  │  │                  │  │                  │
-        │ [DAY 3]          │  │ [DAY 4]          │  │ [DAY 4]          │
+        │ [✅ DAY 3]       │  │ [✅ DAY 4]       │  │ [DAY 4]          │
         └──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
@@ -75,8 +77,8 @@
 | `simple_jarvis_db.py` | Events database (SQLite) | ✅ OPERATIONAL | 351 |
 | `agents/base_agent.py` | Shared agent utilities | ✅ OPERATIONAL | 70 |
 | `agents/data_collector.py` | Agent 1: NL parser | ✅ OPERATIONAL | 182 |
-| `agents/pattern_detector.py` | Agent 2: Correlations | 🔨 DAY 3 | 18 |
-| `agents/forecaster.py` | Agent 3: Predictions | 🔨 DAY 4 | 18 |
+| `agents/pattern_detector.py` | Agent 2: Correlations | ✅ DAY 3 COMPLETE | 285 |
+| `agents/forecaster.py` | Agent 3: ARIMA/Prophet forecasts | ✅ DAY 4 COMPLETE | 340 |
 | `agents/interventionist.py` | Agent 4: Recommendations | 🔨 DAY 4 | 18 |
 | `app/models/event.py` | Event Pydantic schemas | ✅ OPERATIONAL | 70 |
 | `app/models/pattern.py` | Pattern Pydantic schemas | ✅ OPERATIONAL | 52 |
@@ -357,8 +359,8 @@ Each file has comprehensive header documentation explaining:
 4. **simple_jarvis_db.py** - Events database (INSERT → QUERY → UPDATE)
 5. **agents/base_agent.py** - Agent utilities (INIT → LLM CLIENT → ERROR HANDLING)
 6. **agents/data_collector.py** - Parser (TEXT → LLM → JSON → VALIDATE)
-7. **agents/pattern_detector.py** - Correlations (EVENTS → ANALYZE → PATTERNS)
-8. **agents/forecaster.py** - Predictions (HISTORY → MODEL → FORECAST)
+7. **agents/pattern_detector.py** - Correlations (EVENTS → ANALYZE → PATTERNS) ✅ DAY 3
+8. **agents/forecaster.py** - Predictions (HISTORY → ARIMA/PROPHET → FORECAST) ✅ DAY 4
 9. **agents/interventionist.py** - Recommendations (STATE → RULES → INTERVENTIONS)
 10. **app/models/event.py** - Event schemas (REQUEST → VALIDATE → RESPONSE)
 11. **app/models/pattern.py** - Pattern schemas
@@ -368,6 +370,82 @@ Each file has comprehensive header documentation explaining:
 
 ---
 
+## 🔮 Day 4: ForecasterAgent Implementation
+
+### Features
+- **Capacity Prediction:** 7-day energy and capacity forecasts
+- **Advanced Algorithms:** ARIMA and Prophet models with fallback to exponential smoothing
+- **Burnout Risk Scoring:** Heuristic 0-100 score based on recent energy, consecutive work days, sleep debt
+- **Async Pattern Integration:** Fully async flow using pattern detector insights
+- **Pattern Deduplication:** Prevents duplicate patterns via smart merging in database
+
+### API Endpoint: POST /api/forecast
+
+**Request:**
+```json
+{
+  "days": 7  // optional, defaults to 7
+}
+```
+
+**Response:**
+```json
+{
+  "forecast": {
+    "energy_forecast": [72, 74, 76, 73, 71, 69, 70],
+    "capacity_forecast": [75, 78, 80, 77, 74, 72, 73],
+    "next_7_days": ["2024-01-15", "2024-01-16", ...]
+  },
+  "burnout_risk": 35,
+  "patterns_count": 12
+}
+```
+
+### Forecasting Algorithms
+
+**1. ARIMA (AutoRegressive Integrated Moving Average)**
+- Used when: `HAS_ARIMA=True` and `len(series) >= 10`
+- Model: ARIMA(1,1,1) order
+- Fallback: Exponential smoothing if unavailable
+
+**2. Prophet (Facebook Time Series)**
+- Used when: `HAS_PROPHET=True` with date series
+- Features: Automatic seasonality detection
+- Fallback: Exponential smoothing if unavailable
+
+**3. Exponential Smoothing (baseline)**
+- Always available (no dependencies)
+- Alpha: 0.3 (default smoothing factor)
+- Simple weighted average of past values
+
+### Installation for Advanced Forecasting
+```bash
+# Optional dependencies for better forecasts
+pip install pandas numpy statsmodels prophet
+```
+
+### Usage Example
+```python
+# In your client app
+response = await fetch('/api/forecast', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${jwt_token}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ days: 7 })
+});
+
+const { forecast, burnout_risk } = await response.json();
+
+// Display burnout warning if high risk
+if (burnout_risk > 70) {
+  showWarning("High burnout risk - consider scheduling rest");
+}
+```
+
+---
+
 **Generated:** October 27, 2025  
-**Status:** Core system documented, DataCollectorAgent operational  
-**Next:** Day 3 - Implement PatternDetectorAgent
+**Status:** Core system + PatternDetector + ForecasterAgent operational  
+**Next:** Day 4 - Implement InterventionistAgent

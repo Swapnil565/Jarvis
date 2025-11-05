@@ -83,6 +83,7 @@ from simple_jarvis_db import jarvis_db
 from app.models.event import EventCreate, EventResponse, EventCategory
 from agents.data_collector import data_collector
 from agents.pattern_detector import pattern_detector
+from agents.forecaster import forecaster
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -557,6 +558,20 @@ async def generate_insights(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate insights: {str(e)}"
+        )
+
+
+@app.post("/api/forecast")
+async def generate_forecast(days: int = 7, current_user: dict = Depends(get_current_user)):
+    """Trigger forecaster to generate a short-term forecast for the user (default 7 days)."""
+    try:
+        result = await forecaster.generate_forecast(current_user["id"], days)
+        return {"message": "Forecast generated", "forecast": result}
+    except Exception as e:
+        logger.error(f"Failed to generate forecast: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate forecast: {str(e)}"
         )
 
 # ==================== OLD ENDPOINTS (TO BE REMOVED) ====================

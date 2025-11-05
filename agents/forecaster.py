@@ -140,15 +140,199 @@ STATUS: PLACEHOLDER - TO BE IMPLEMENTED ON DAY 4
 """
 
 from .base_agent import BaseAgent
+import statistics
+
+# Optional advanced backends
+try:
+    import pandas as pd
+    import numpy as np
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
+
+try:
+    from statsmodels.tsa.arima.model import ARIMA
+    HAS_ARIMA = True
+except ImportError:
+    HAS_ARIMA = False
+
+try:
+    from prophet import Prophet
+    HAS_PROPHET = True
+except ImportError:
+    HAS_PROPHET = False
 
 
 class ForecasterAgent(BaseAgent):
-    """Agent 3: Forecaster - TODO: Implement on Day 4"""
-    
+    """Agent 3: 
+    Provides simple forecasting helpers (moving average, exponential
+    smoothing) and a primitive burnout score used by the API endpoint.
+    """
+
     def __init__(self):
         super().__init__()
-        self.logger.info("ForecasterAgent initialized (placeholder)")
-    
-    async def generate_forecast(self, user_id: int):
-        """Generate 7-day capacity forecast - TODO: Day 4"""
-        raise NotImplementedError("ForecasterAgent will be implemented on Day 4")
+        self.logger.info("ForecasterAgent initialized")
+        # Tunable parameters
+        self.lookback_days = 30
+        self.forecast_days = 7
+        self.alpha = 0.3  # smoothing factor for exponential smoothing
+
+    # ----------------- numeric helpers -----------------
+    def moving_average(self, series: list, window: int = 3) -> list:
+        if not series or window <= 0:
+            return []
+        if len(series) < window:
+            return [statistics.mean(series)] * len(series)
+        ma = []
+        for i in range(len(series)):
+            start = max(0, i - window + 1)
+            ma.append(statistics.mean(series[start:i+1]))
+        return ma
+
+    def exp_smoothing_forecast(self, series: list, alpha: float = None, steps: int = 1) -> list:
+        """Simple exponential smoothing forecast: produce `steps` future points."""
+        if alpha is None:
+            alpha = self.alpha
+        if not series:
+            return [0.0] * steps
+        s = series[0]
+        for val in series:
+            s = alpha * val + (1 - alpha) * s
+        return [s] * steps
+
+    def burnout_score(self, recent_energy: list, consecutive_work_days: int, sleep_debt: float = 0.0) -> float:
+        """Compute a simple burnout score (0-100)."""
+        if not recent_energy:
+            return 0.0
+        baseline = statistics.mean(recent_energy)
+        last = recent_energy[-1]
+        energy_deficit = max(0.0, baseline - last)
+        score = (consecutive_work_days * 8) + (energy_deficit * 12) + (sleep_debt * 15)
+        return max(0.0, min(100.0, score))
+
+    def arima_forecast(self, series: list, steps: int = 7) -> list:
+        """ARIMA forecast (optional, falls back to exp smoothing if unavailable)."""
+        if not HAS_ARIMA or not HAS_PANDAS or len(series) < 10:
+            return self.exp_smoothing_forecast(series, steps=steps)
+        try:
+            model = ARIMA(series, order=(1,1,1))
+            fitted = model.fit()
+            forecast = fitted.forecast(steps=steps)
+            return forecast.tolist()
+        except Exception:
+            return self.exp_smoothing_forecast(series, steps=steps)
+
+    def prophet_forecast(self, series: list, dates: list, steps: int = 7) -> list:
+        """Prophet forecast (optional, falls back if unavailable)."""
+        if not HAS_PROPHET or not HAS_PANDAS or len(series) < 10:
+            return self.exp_smoothing_forecast(series, steps=steps)
+        try:
+            df = pd.DataFrame({'ds': pd.to_datetime(dates), 'y': series})
+            model = Prophet(daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False)
+            model.fit(df)
+            future = model.make_future_dataframe(periods=steps)
+            forecast = model.predict(future)
+            return forecast['yhat'].tail(steps).tolist()
+        except Exception:
+            return self.exp_smoothing_forecast(series, steps=steps)
+
+    # ----------------- orchestration -----------------
+    async def generate_forecast(self, user_id: int, days: int = None) -> dict:
+        """Generate a simple n-day forecast based on recent events.
+
+        The forecast is lightweight: it builds a daily energy series from events
+        (counts and feelings) and uses moving average + exponential smoothing to
+        project the next `days` days. Also computes a burnout score.
+        """
+        from simple_jarvis_db import jarvis_db
+        from agents.pattern_detector import pattern_detector
+
+        days = days or self.forecast_days
+
+        # Fetch recent events
+        events = jarvis_db.get_events(user_id, limit=self.lookback_days)
+        if not events:
+            return {
+                "forecast": [], 
+                "confidence": 0.0, 
+                "based_on_events": 0,
+                "burnout_score": 0,
+                "detected_patterns": {}
+            }
+
+        # Aggregate daily energy metric: start with zeros and add +1 for workout, +0 for task, -1 for low feeling
+        daily = {}
+        for e in events:
+            day = e.get('timestamp', '')[:10]
+            if not day:
+                continue
+            if day not in daily:
+                daily[day] = {'score': 0.0, 'count': 0}
+            val = 0.0
+            if e.get('event_type') == 'workout':
+                val += 1.0
+            if e.get('event_type') == 'meditation':
+                val += 0.8
+            feeling = (e.get('feeling') or '').lower()
+            if feeling in ('energized', 'great', 'focused'):
+                val += 1.0
+            if feeling in ('tired', 'exhausted', 'stressed'):
+                val -= 1.0
+            daily[day]['score'] += val
+            daily[day]['count'] += 1
+
+        # Build series sorted by date
+        days_sorted = sorted(daily.keys())
+        energy_series = [daily[d]['score'] / max(1, daily[d]['count']) for d in days_sorted]
+
+        # Forecast using moving average and exponential smoothing (or advanced if available)
+        ma = self.moving_average(energy_series, window=3)
+        # Try ARIMA first if available, fallback to exponential smoothing
+        if HAS_ARIMA and len(energy_series) >= 10:
+            forecast_vals = self.arima_forecast(energy_series, steps=days)
+        else:
+            forecast_vals = self.exp_smoothing_forecast(energy_series, steps=days)
+
+        # Burnout score: assume consecutive work days equals recent workout days streak
+        consecutive_work_days = 0
+        for d in reversed(days_sorted[-7:]):
+            # if average > 0.5 consider it a work-like day
+            if (daily[d]['score'] / max(1, daily[d]['count'])) > 0.5:
+                consecutive_work_days += 1
+            else:
+                break
+
+        sleep_debt = 0.0  # placeholder (not tracked yet)
+        last7 = energy_series[-7:] if len(energy_series) >= 1 else energy_series
+        bscore = self.burnout_score(last7, consecutive_work_days, sleep_debt)
+
+        # Build result
+        from datetime import date, timedelta
+        last_date = date.fromisoformat(days_sorted[-1]) if days_sorted else date.today()
+        next_days = []
+        for i in range(1, days + 1):
+            d = last_date + timedelta(days=i)
+            val = forecast_vals[i - 1] if i - 1 < len(forecast_vals) else forecast_vals[-1]
+            next_days.append({
+                'date': d.isoformat(),
+                'capacity': round(max(0.0, val * 5 + 5), 2),  # scale roughly to 0-10
+                'energy': round(val, 3),
+                'burnout_risk': round(bscore, 2)
+            })
+
+        confidence = min(1.0, len(energy_series) / float(self.lookback_days))
+
+        # Fully async pattern detection call
+        detected_patterns = await pattern_detector.detect_patterns(user_id)
+
+        return {
+            'forecast': next_days,
+            'confidence': confidence,
+            'based_on_events': len(energy_series),
+            'burnout_score': bscore,
+            'detected_patterns': detected_patterns
+        }
+
+
+# Global instance
+forecaster = ForecasterAgent()

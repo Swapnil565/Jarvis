@@ -246,18 +246,43 @@ class SimpleJarvisDB:
     
     def create_pattern(self, user_id: int, pattern_type: str, description: str,
                       confidence: float, data: Dict[str, Any] = None) -> int:
-        """Create a new pattern"""
+        """Create a new pattern or update existing if duplicate found"""
         timestamp = datetime.utcnow().isoformat()
         data_json = json.dumps(data or {})
         
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            
+            # Check for existing similar pattern (same type and similar description)
             cursor.execute("""
-                INSERT INTO patterns (user_id, pattern_type, description, confidence, 
-                                    frequency, first_detected, last_seen, data, is_active)
-                VALUES (?, ?, ?, ?, 1, ?, ?, ?, 1)
-            """, (user_id, pattern_type, description, confidence, timestamp, timestamp, data_json))
-            return cursor.lastrowid
+                SELECT id, frequency, confidence FROM patterns 
+                WHERE user_id = ? AND pattern_type = ? AND description = ? AND is_active = 1
+            """, (user_id, pattern_type, description))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Update existing pattern: increment frequency, update confidence, update last_seen
+                pattern_id = existing['id']
+                old_freq = existing['frequency']
+                old_conf = existing['confidence']
+                new_freq = old_freq + 1
+                # Weighted average of confidences
+                new_conf = (old_conf * old_freq + confidence) / new_freq
+                cursor.execute("""
+                    UPDATE patterns 
+                    SET frequency = ?, confidence = ?, last_seen = ?, data = ?
+                    WHERE id = ?
+                """, (new_freq, new_conf, timestamp, data_json, pattern_id))
+                self.logger.info(f"Updated existing pattern {pattern_id} (freq: {new_freq}, conf: {new_conf:.3f})")
+                return pattern_id
+            else:
+                # Create new pattern
+                cursor.execute("""
+                    INSERT INTO patterns (user_id, pattern_type, description, confidence, 
+                                        frequency, first_detected, last_seen, data, is_active)
+                    VALUES (?, ?, ?, ?, 1, ?, ?, ?, 1)
+                """, (user_id, pattern_type, description, confidence, timestamp, timestamp, data_json))
+                return cursor.lastrowid
     
     def get_patterns(self, user_id: int, active_only: bool = True) -> List[Dict[str, Any]]:
         """Get user's patterns"""
