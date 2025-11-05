@@ -574,6 +574,86 @@ async def generate_forecast(days: int = 7, current_user: dict = Depends(get_curr
             detail=f"Failed to generate forecast: {str(e)}"
         )
 
+# ==================== INTERVENTION ENDPOINTS (DAY 4) ====================
+
+@app.post("/api/interventions/check")
+async def check_interventions(current_user: dict = Depends(get_current_user)):
+    """Check if user needs any interventions based on current state."""
+    from agents.interventionist import interventionist
+    
+    try:
+        interventions = await interventionist.check_intervention(current_user["id"])
+        return {
+            "interventions": interventions,
+            "count": len(interventions),
+            "message": f"{len(interventions)} intervention(s) detected"
+        }
+    except Exception as e:
+        logger.error(f"Failed to check interventions: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to check interventions: {str(e)}"
+        )
+
+@app.get("/api/interventions")
+async def get_interventions(current_user: dict = Depends(get_current_user)):
+    """Get all pending interventions for the user."""
+    try:
+        interventions = jarvis_db.get_pending_interventions(current_user["id"])
+        return {
+            "interventions": interventions,
+            "count": len(interventions)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get interventions: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get interventions: {str(e)}"
+        )
+
+@app.post("/api/interventions/{intervention_id}/acknowledge")
+async def acknowledge_intervention(intervention_id: int, current_user: dict = Depends(get_current_user)):
+    """Mark an intervention as acknowledged by the user."""
+    try:
+        jarvis_db.mark_intervention_delivered(intervention_id)
+        return {"message": "Intervention acknowledged", "intervention_id": intervention_id}
+    except Exception as e:
+        logger.error(f"Failed to acknowledge intervention: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to acknowledge intervention: {str(e)}"
+        )
+
+@app.post("/api/interventions/{intervention_id}/rate")
+async def rate_intervention(
+    intervention_id: int,
+    rating: int,
+    was_helpful: bool,
+    current_user: dict = Depends(get_current_user)
+):
+    """Rate an intervention (1-5 stars) and provide feedback."""
+    try:
+        if rating < 1 or rating > 5:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Rating must be between 1 and 5"
+            )
+        
+        jarvis_db.add_intervention_feedback(intervention_id, rating, was_helpful)
+        return {
+            "message": "Feedback recorded",
+            "intervention_id": intervention_id,
+            "rating": rating
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to rate intervention: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to rate intervention: {str(e)}"
+        )
+
 # ==================== OLD ENDPOINTS (TO BE REMOVED) ====================
 
 @app.post("/query")
