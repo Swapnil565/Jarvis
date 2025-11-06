@@ -85,6 +85,17 @@ from agents.data_collector import data_collector
 from agents.pattern_detector import pattern_detector
 from agents.forecaster import forecaster
 
+# Import Celery tasks for background processing
+from celery.result import AsyncResult
+from jarvis_celery import app as celery_app
+from celery_tasks import (
+    analyze_event_task,
+    daily_workflow_task,
+    detect_patterns_all_users_task,
+    generate_forecasts_all_users_task,
+    health_check_task
+)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -380,10 +391,17 @@ async def parse_and_create_event(
         
         event = jarvis_db.get_event_by_id(event_id)
         
+        # 🔥 Queue background task for real-time analysis
+        # This runs asynchronously in a Celery worker (non-blocking)
+        # Pattern: Fire-and-forget (don't wait for result)
+        task = analyze_event_task.delay(current_user["id"], event_id)
+        logger.info(f"Queued analysis task {task.id} for user {current_user['id']}, event {event_id}")
+        
         return {
             "message": "Event parsed and logged successfully",
             "event": event,
-            "parsed_from": text
+            "parsed_from": text,
+            "analysis_task_id": task.id  # User can check task status later
         }
         
     except HTTPException:
@@ -735,6 +753,166 @@ async def ping():
     """Simple ping endpoint"""
     return {"status": "ok", "timestamp": time.time()}
 
+
+# =============================================================================
+# CELERY TASK MANAGEMENT ENDPOINTS (Day 6)
+# =============================================================================
+
+@app.get("/api/tasks/{task_id}")
+async def get_task_status(task_id: str):
+    """
+    Get status of a background Celery task
+    
+    Returns:
+    - status: "PENDING" | "STARTED" | "SUCCESS" | "FAILURE" | "RETRY"
+    - result: Task result if completed successfully
+    - error: Error message if failed
+    
+    Pattern: Check task status (Pattern 2 from tutorial)
+    """
+    try:
+        task = AsyncResult(task_id, app=celery_app)
+        
+        response = {
+            "task_id": task_id,
+            "status": task.status,
+            "ready": task.ready(),
+            "successful": task.successful() if task.ready() else None
+        }
+        
+        # Add result or error based on status
+        if task.ready():
+            if task.successful():
+                response["result"] = task.result
+            else:
+                response["error"] = str(task.info)
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Failed to get task status for {task_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get task status: {str(e)}"
+        )
+
+
+@app.post("/api/tasks/trigger/daily-workflow")
+async def trigger_daily_workflow(current_user: dict = Depends(get_current_user)):
+    """
+    Manually trigger daily workflow for current user
+    (Normally runs automatically at 2am via Celery Beat)
+    
+    Pattern: Fire-and-forget with task_id response
+    """
+    try:
+        task = daily_workflow_task.delay(current_user["id"])
+        logger.info(f"Manually triggered daily workflow task {task.id} for user {current_user['id']}")
+        
+        return {
+            "message": "Daily workflow queued successfully",
+            "task_id": task.id,
+            "user_id": current_user["id"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to trigger daily workflow: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to trigger workflow: {str(e)}"
+        )
+
+
+@app.post("/api/tasks/trigger/detect-patterns")
+async def trigger_pattern_detection(current_user: dict = Depends(get_current_user)):
+    """
+    Manually trigger pattern detection for all active users
+    (Normally runs automatically every 6 hours via Celery Beat)
+    
+    Requires admin privileges in production
+    Pattern: Fire-and-forget
+    """
+    try:
+        task = detect_patterns_all_users_task.delay()
+        logger.info(f"Manually triggered pattern detection task {task.id}")
+        
+        return {
+            "message": "Pattern detection queued for all users",
+            "task_id": task.id
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to trigger pattern detection: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to trigger pattern detection: {str(e)}"
+        )
+
+
+@app.post("/api/tasks/trigger/generate-forecasts")
+async def trigger_forecast_generation(current_user: dict = Depends(get_current_user)):
+    """
+    Manually trigger forecast generation for all active users
+    (Normally runs automatically at 1am daily via Celery Beat)
+    
+    Requires admin privileges in production
+    Pattern: Fire-and-forget
+    """
+    try:
+        task = generate_forecasts_all_users_task.delay()
+        logger.info(f"Manually triggered forecast generation task {task.id}")
+        
+        return {
+            "message": "Forecast generation queued for all users",
+            "task_id": task.id
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to trigger forecast generation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to trigger forecasts: {str(e)}"
+        )
+
+
+@app.get("/api/tasks/health")
+async def celery_health_check():
+    """
+    Check if Celery workers are running and responsive
+    
+    Returns:
+    - workers_online: Number of active Celery workers
+    - broker_connected: Whether Redis broker is accessible
+    - scheduled_tasks: Number of tasks in beat schedule
+    """
+    try:
+        # Check active workers
+        inspect = celery_app.control.inspect()
+        stats = inspect.stats()
+        active_workers = len(stats) if stats else 0
+        
+        # Check beat schedule
+        from celery_beat_schedule import BEAT_SCHEDULE
+        scheduled_tasks = len(BEAT_SCHEDULE)
+        
+        return {
+            "status": "healthy" if active_workers > 0 else "no_workers",
+            "workers_online": active_workers,
+            "broker": "redis://localhost:6379/0",
+            "scheduled_tasks": scheduled_tasks,
+            "message": "Celery workers running" if active_workers > 0 else "No Celery workers detected"
+        }
+        
+    except Exception as e:
+        logger.error(f"Celery health check failed: {e}")
+        return {
+            "status": "error",
+            "workers_online": 0,
+            "error": str(e),
+            "message": "Celery not available (workers not running or Redis not connected)"
+        }
+
+
 if __name__ == "__main__":
     import uvicorn
     
@@ -751,6 +929,13 @@ if __name__ == "__main__":
     print("- GET /api/events - Retrieve events with filters")
     print("- GET /api/events/today - Today's status dashboard")
     print("- DELETE /api/events/{id} - Delete event")
+    print("")
+    print("Background Tasks (Day 6 - Celery):")
+    print("- GET /api/tasks/{task_id} - Check task status")
+    print("- POST /api/tasks/trigger/daily-workflow - Manually trigger daily workflow")
+    print("- POST /api/tasks/trigger/detect-patterns - Manually trigger pattern detection")
+    print("- POST /api/tasks/trigger/generate-forecasts - Manually trigger forecasts")
+    print("- GET /api/tasks/health - Check Celery worker status")
     print("")
     print("Statistics & Health:")
     print("- GET /api/stats - User statistics")

@@ -1,0 +1,39 @@
+# =============================================================================
+# DOCKER COMPOSE - REDIS & FLOWER SETUP [DAY 6]
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # Redis Service - Task Queue and Result Storage
+  redis:
+    image: redis:alpine
+    container_name: jarvis-redis
+    ports:
+      - "6379:6379"
+    restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Flower Service - Task Monitoring Dashboard
+  flower:
+    image: mher/flower
+    container_name: jarvis-flower
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      - redis
+    command: celery --broker=redis://redis:6379/0 flower --port=5555
+    restart: always
+
+volumes:
+  redis_data:
