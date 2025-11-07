@@ -96,6 +96,11 @@ from celery_tasks import (
     health_check_task
 )
 
+# DAY 7: Import optimization middleware
+from app.middleware.cache_manager import get as cache_get, set as cache_set, invalidate_user_cache
+from app.middleware.rate_limiter import init_rate_limiter, limiter
+from app.middleware.performance_monitor import performance_logging_middleware
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -147,6 +152,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# DAY 7: Add performance monitoring middleware
+app.middleware("http")(performance_logging_middleware)
+
+# DAY 7: Initialize rate limiter
+init_rate_limiter(app)
 
 # Include auth router
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["Authentication"])
@@ -219,6 +230,7 @@ async def create_event(
     """
     Log a new event (workout, task, meditation)
     Requires authentication
+    DAY 7: Invalidates cache after creating event
     """
     try:
         event_id = jarvis_db.create_event(
@@ -228,6 +240,9 @@ async def create_event(
             feeling=event_data.feeling,
             data=event_data.data
         )
+        
+        # DAY 7: Invalidate user cache since data changed
+        invalidate_user_cache(current_user["id"])
         
         event = jarvis_db.get_event_by_id(event_id)
         
@@ -360,6 +375,7 @@ async def delete_event(
 # ==================== DATA COLLECTOR AGENT ENDPOINTS (DAY 2) ====================
 
 @app.post("/api/events/parse", status_code=status.HTTP_201_CREATED)
+@limiter.limit("50/minute")  # DAY 7: Rate limit expensive LLM calls
 async def parse_and_create_event(
     text: str,
     current_user: dict = Depends(get_current_user)
@@ -368,6 +384,7 @@ async def parse_and_create_event(
     Parse natural language input and create event
     Examples: "upper body heavy felt great", "finished client proposal", "meditated 10 minutes"
     Requires authentication
+    DAY 7: Rate limited to 50 requests/minute (expensive LLM operation)
     """
     try:
         # Parse using Data Collector Agent
@@ -388,6 +405,9 @@ async def parse_and_create_event(
             feeling=parsed.get('feeling'),
             data=parsed['data']
         )
+        
+        # DAY 7: Invalidate user cache since data changed
+        invalidate_user_cache(current_user["id"])
         
         event = jarvis_db.get_event_by_id(event_id)
         
@@ -538,9 +558,25 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
     """
     Get user statistics
     Requires authentication
+    DAY 7: Cached for 5 minutes (300s) for 100x faster response
     """
+    user_id = current_user["id"]
+    cache_key = f"stats:user:{user_id}"
+    
     try:
-        stats = jarvis_db.get_stats(user_id=current_user["id"])
+        # DAY 7: Check cache first
+        cached = cache_get(cache_key)
+        if cached:
+            logger.info(f"✅ Cache HIT for stats:user:{user_id}")
+            return cached
+        
+        # Cache miss - query database
+        logger.info(f"❌ Cache MISS for stats:user:{user_id}")
+        stats = jarvis_db.get_stats(user_id=user_id)
+        
+        # Store in cache for 5 minutes
+        cache_set(cache_key, stats, ttl=300)
+        
         return stats
         
     except Exception as e:

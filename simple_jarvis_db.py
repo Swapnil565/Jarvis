@@ -96,6 +96,7 @@ class SimpleJarvisDB:
     def __init__(self, db_path: str = "jarvis_events.db"):
         self.db_path = db_path
         self.init_database()
+        self.create_performance_indexes()  # DAY 7: Create indexes for performance
     
     @contextmanager
     def get_connection(self):
@@ -449,6 +450,19 @@ class SimpleJarvisDB:
                 "active_patterns": active_patterns,
                 "unread_interventions": unread_interventions
             }
+    
+    def create_performance_indexes(self):
+        """Create Day 7 performance indexes"""
+        from database_optimizer import create_indexes
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            with self.get_connection() as conn:
+                create_indexes(conn)
+                logger.info("✅ Day 7 performance indexes created successfully")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not create indexes (may already exist): {e}")
 
 
 # Global instance
