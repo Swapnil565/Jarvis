@@ -1,0 +1,245 @@
+# =============================================================================
+# JARVIS 3.0 - Render Deployment Configuration
+# =============================================================================
+# Deploy all services to Render's free tier with one click
+# Usage: Push to GitHub → Render Dashboard → New Blueprint → Connect Repo
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # API Service (FastAPI Backend)
+  # ===========================================================================
+  - type: web
+    name: jarvis-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: singapore  # Closest to Supabase ap-south-1 (Mumbai)
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # Environment
+      - key: JARVIS_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DEBUG
+        value: false
+      
+      # Database (Supabase - set these as secrets in Render dashboard)
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_POOLED
+        sync: false
+      
+      # Redis (auto-connected from redis service below)
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: jarvis-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: jarvis-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: jarvis-redis
+          property: connectionString
+      
+      # Security (set as secrets)
+      - key: SECRET_KEY
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 30
+      
+      # AI API Keys (set as secrets)
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: HUGGINGFACE_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+
+  # ===========================================================================
+  # Celery Worker (Background Task Processor)
+  # ===========================================================================
+  - type: worker
+    name: jarvis-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile.worker
+    dockerContext: .
+    region: singapore
+    plan: free
+    envVars:
+      # Environment
+      - key: JARVIS_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      
+      # Database
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_POOLED
+        sync: false
+      
+      # Redis
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: jarvis-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: jarvis-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: jarvis-redis
+          property: connectionString
+      
+      # Security
+      - key: SECRET_KEY
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      
+      # AI API Keys
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: HUGGINGFACE_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+
+  # ===========================================================================
+  # Celery Beat (Periodic Task Scheduler)
+  # ===========================================================================
+  - type: worker
+    name: jarvis-beat
+    runtime: docker
+    dockerfilePath: ./Dockerfile.beat
+    dockerContext: .
+    region: singapore
+    plan: free
+    envVars:
+      # Environment
+      - key: JARVIS_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      
+      # Database
+      - key: DATABASE_URL
+        sync: false
+      
+      # Redis
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: jarvis-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: jarvis-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: jarvis-redis
+          property: connectionString
+
+databases:
+  # ===========================================================================
+  # Redis (Message Broker & Cache)
+  # ===========================================================================
+  - name: jarvis-redis
+    plan: free  # 25MB free tier
+    maxmemoryPolicy: noeviction  # Don't evict data when full
+    ipAllowList: []  # Allow all IPs (change in production)
+
+# =============================================================================
+# DEPLOYMENT INSTRUCTIONS
+# =============================================================================
+#
+# 1. PUSH CODE TO GITHUB:
+#    git add .
+#    git commit -m "Ready for deployment"
+#    git push origin main
+#
+# 2. GO TO RENDER:
+#    https://dashboard.render.com
+#
+# 3. CREATE BLUEPRINT:
+#    - Click "New +" → "Blueprint"
+#    - Connect your GitHub account
+#    - Select this repository
+#    - Render will detect render.yaml automatically
+#    - Click "Apply"
+#
+# 4. ADD SECRET ENVIRONMENT VARIABLES:
+#    Go to each service (api, worker, beat) and add these secrets:
+#
+#    DATABASE_URL=postgresql://postgres.ulnfnxvxlswjomqrobrd:YOUR_DB_PASSWORD@aws-1-ap-south-1.pooler.supabase.com:5432/postgres
+#    DATABASE_URL_POOLED=postgresql://postgres.ulnfnxvxlswjomqrobrd:YOUR_DB_PASSWORD@aws-1-ap-south-1.pooler.supabase.com:6543/postgres
+#    SECRET_KEY=your-super-secret-production-key-min-32-characters
+#    JWT_SECRET_KEY=your-jwt-secret-production-key-min-32-characters
+#    CEREBRAS_API_KEY=your_cerebras_key
+#    GEMINI_API_KEY=your_gemini_key
+#    GROQ_API_KEY=your_groq_key
+#    OPENROUTER_API_KEY=your_openrouter_key
+#    HUGGINGFACE_API_KEY=your_hf_key
+#    HF_TOKEN=your_hf_token
+#
+# 5. RUN DATABASE MIGRATION:
+#    After API service is deployed:
+#    - Go to jarvis-api service
+#    - Click "Shell" tab
+#    - Run: python -m alembic upgrade head
+#
+# 6. TEST YOUR DEPLOYMENT:
+#    curl https://jarvis-api.onrender.com/health
+#
+# 7. MONITOR SERVICES:
+#    - Check logs in Render dashboard
+#    - All services should show "Live" status
+#    - Health checks should be passing
+#
+# =============================================================================
+# ESTIMATED COSTS (FREE TIER)
+# =============================================================================
+#
+# - API Service: FREE (750 hours/month, spins down after 15 min)
+# - Worker Service: FREE (750 hours/month)
+# - Beat Service: FREE (750 hours/month)
+# - Redis: FREE (25MB storage)
+#
+# Total: $0/month 🎉
+#
+# Note: Services on free tier spin down after 15 minutes of inactivity.
+# First request after spin-down will take ~30 seconds to wake up.
+# Use UptimeRobot to keep service awake if needed.
+#
+# =============================================================================

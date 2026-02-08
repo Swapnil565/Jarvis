@@ -227,6 +227,8 @@ config.json
 .secrets
 .env.local
 .env.production
+.env.production.secret
+.env*.secret
 
 # Database files
 *.db

@@ -1,0 +1,74 @@
+# 🚀 QUICK START - Integration
+
+## ❌ NO MOVING NEEDED!
+
+```
+Your Setup (Perfect!):
+─────────────────────
+Backend Folder     Frontend Folder
+(this location)    (your location)
+      ↓                   ↓
+  Stays here          Stays there
+      ↓                   ↓
+  port :8000          port :3000
+      └───────HTTP───────┘
+```
+
+## ✅ Integration in 30 Seconds
+
+### Terminal 1 - Backend (this folder):
+```powershell
+docker-compose up
+# Backend now at http://localhost:8000 ✅
+```
+
+### Terminal 2 - Frontend (your folder):
+```powershell
+# Add this ONE line to .env.local:
+NEXT_PUBLIC_API_URL=http://localhost:8000
+
+npm run dev
+# Frontend now at http://localhost:3000 ✅
+```
+
+### Done! ✅
+
+Frontend automatically calls backend at localhost:8000.
+
+## 🔄 API Usage Example
+
+```javascript
+// lib/api.js (if not exists, create it)
+import axios from 'axios';
+
+const api = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL
+});
+
+export default api;
+
+// Use anywhere:
+import api from '@/lib/api';
+await api.post('/auth/login', { email, password });
+await api.get('/insights');
+```
+
+## 📚 Full Guide
+
+See `docs/INTEGRATION_GUIDE.md` for complete examples.
+
+## ❓ FAQ
+
+**Q: Do I move files?**  
+A: NO! They stay separate.
+
+**Q: How do they talk?**  
+A: HTTP requests (like calling any API).
+
+**Q: What if different computers?**  
+A: Use IP: `NEXT_PUBLIC_API_URL=http://192.168.1.100:8000`
+
+## ✅ That's It!
+
+No monorepo. No moving. Just environment variable + HTTP. Standard modern architecture! 🎉
+

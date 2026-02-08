@@ -1,17 +1,31 @@
-# =============================================================================
-# DOCKER COMPOSE - REDIS & FLOWER SETUP [DAY 6]
-# =============================================================================
-
 version: '3.8'
 
 services:
-  # Redis Service - Task Queue and Result Storage
+  # PostgreSQL Database - LOCAL ONLY (Comment out when using Supabase)
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: jarvis-postgres
+  #   environment:
+  #     POSTGRES_USER: jarvis
+  #     POSTGRES_PASSWORD: ${DB_PASSWORD:-jarvis_secret_2024}
+  #     POSTGRES_DB: jarvis
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U jarvis"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   restart: always
+
+  # Redis - Cache + Celery Broker
   redis:
-    image: redis:alpine
+    image: redis:7-alpine
     container_name: jarvis-redis
     ports:
       - "6379:6379"
-    restart: always
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
@@ -20,20 +34,130 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+    restart: always
 
-  # Flower Service - Task Monitoring Dashboard
+  # FastAPI Application
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jarvis-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL_POOLED=${DATABASE_URL_POOLED}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - JARVIS_ENV=${JARVIS_ENV:-production}
+      - SECRET_KEY=${SECRET_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEBUG=${DEBUG:-false}
+      # AI API Keys
+      - CEREBRAS_API_KEY=${CEREBRAS_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Celery Worker - Background Tasks
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: jarvis-celery-worker
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - JARVIS_ENV=${JARVIS_ENV:-production}
+      - SECRET_KEY=${SECRET_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CELERY_WORKER_CONCURRENCY=${CELERY_WORKER_CONCURRENCY:-4}
+      - CELERY_PREFETCH_MULTIPLIER=${CELERY_PREFETCH_MULTIPLIER:-2}
+      - CELERY_MAX_TASKS_PER_CHILD=${CELERY_MAX_TASKS_PER_CHILD:-1000}
+      # AI API Keys
+      - CEREBRAS_API_KEY=${CEREBRAS_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Celery Beat Scheduler - Periodic Tasks
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.beat
+    container_name: jarvis-celery-beat
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - JARVIS_ENV=${JARVIS_ENV:-production}
+      - SECRET_KEY=${SECRET_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    volumes:
+      - ./logs:/app/logs
+      - beat_data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep 'celery beat' | grep -v grep || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Flower - Celery Monitoring Dashboard (Optional)
   flower:
-    image: mher/flower
+    image: mher/flower:2.0
     container_name: jarvis-flower
     ports:
       - "5555:5555"
     environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
     depends_on:
       - redis
-    command: celery --broker=redis://redis:6379/0 flower --port=5555
-    restart: always
+      - worker
+    restart: unless-stopped
+    command: celery --broker=redis://redis:6379/1 flower --port=5555
 
 volumes:
+  # postgres_data:  # Commented out - using external Supabase
   redis_data:
+  beat_data:
+

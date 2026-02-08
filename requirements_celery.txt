@@ -1,0 +1,23 @@
+# ================================================
+# CELERY REQUIREMENTS
+# ================================================
+# Install these packages for Celery functionality
+
+# Core Celery
+celery[redis]==5.3.4
+
+# Redis (message broker and result backend)
+# Celery "redis" extra requires redis>=4.5.2,<5.0.0 — pin to a compatible 4.x release
+redis==4.6.0
+
+# JSON serialization (already included with Python)
+# No additional package needed
+
+# For monitoring (optional)
+flower==2.0.1  # Web-based monitoring tool
+
+# For database result backend (optional, if not using Redis)
+# SQLAlchemy==2.0.23
+
+# Timezone support
+pytz==2023.3

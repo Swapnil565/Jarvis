@@ -274,7 +274,7 @@ class SimpleJarvisDB:
                     SET frequency = ?, confidence = ?, last_seen = ?, data = ?
                     WHERE id = ?
                 """, (new_freq, new_conf, timestamp, data_json, pattern_id))
-                self.logger.info(f"Updated existing pattern {pattern_id} (freq: {new_freq}, conf: {new_conf:.3f})")
+                # Pattern updated: increment frequency
                 return pattern_id
             else:
                 # Create new pattern
@@ -453,13 +453,17 @@ class SimpleJarvisDB:
     
     def create_performance_indexes(self):
         """Create Day 7 performance indexes"""
-        from database_optimizer import create_indexes
         import logging
         logger = logging.getLogger(__name__)
         
         try:
             with self.get_connection() as conn:
-                create_indexes(conn)
+                cursor = conn.cursor()
+                # Basic indexes for common queries
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_user_timestamp ON events(user_id, timestamp DESC)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_patterns_user_active ON patterns(user_id, is_active)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_interventions_user_delivered ON interventions(user_id, delivered_at)")
+                conn.commit()
                 logger.info("✅ Day 7 performance indexes created successfully")
         except Exception as e:
             logger.warning(f"⚠️ Could not create indexes (may already exist): {e}")

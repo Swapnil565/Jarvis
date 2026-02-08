@@ -1,582 +1,325 @@
-"""
-=============================================================================
-JARVIS 3.0 - INTERVENTIONIST AGENT (Agent 4: Proactive Recommendations) [DAY 4]
-=============================================================================
-
-PURPOSE:
---------
-Agent 4 of the 4-agent system (TO BE IMPLEMENTED ON DAY 4). The "action layer"
-that converts patterns and forecasts into actionable recommendations. Generates
-warnings, suggestions, insights, and forecasts to help users avoid burnout and
-optimize performance.
-
-RESPONSIBILITY (When Implemented):
------------------------------------
-- Monitor real-time user state for intervention triggers
-- Generate warnings when burnout risk detected (overtraining, energy debt)
-- Create suggestions for optimal timing (energy above baseline → deep work)
-- Deliver insights from detected patterns (workout → productivity boost)
-- Prioritize interventions by urgency (critical warnings first)
-- Learn from user feedback (rating, was_helpful) to improve recommendations
-- Store interventions in interventions table via jarvis_db
-
-DATA FLOW (Patterns + Forecasts → Intervention Logic → Recommendations):
--------------------------------------------------------------------------
-INTERVENTION GENERATION FLOW (Day 4 Implementation):
-1. Triggered by:
-   - Real-time: After new event logged (check immediate state)
-   - Scheduled: Celery job runs every 6 hours (Day 6)
-   - Manual: POST /api/interventions/check
-2. InterventionistAgent.check_intervention(user_id) called
-3. Gather context:
-   - Fetch last 7 days of events from jarvis_db
-   - Get active patterns from PatternDetectorAgent
-   - Get forecast from ForecasterAgent
-   - Calculate current burnout score
-4. Evaluate intervention rules (see RULE ENGINE below)
-5. For each triggered rule:
-   - Determine intervention type (warning/suggestion/insight/forecast)
-   - Set urgency level (low/medium/high/critical)
-   - Generate title + message (use LLM for natural language)
-   - Add supporting data (metrics, pattern IDs, confidence scores)
-   - Create Intervention object
-   - Call jarvis_db.create_intervention()
-6. Return list of new interventions
-7. simple_main.py delivers to user (push notification, dashboard, email)
-
-RULE ENGINE (Intervention Triggers):
-------------------------------------
-1. OVERTRAINING WARNING (Urgency: HIGH):
-   - Trigger: 7+ consecutive workout days without rest
-   - Message: "You've worked out 7 days straight. Rest day recommended."
-   - Data: consecutive_days, fatigue_score, recovery_time_needed
-
-2. BURNOUT FORECAST (Urgency: CRITICAL):
-   - Trigger: Forecast shows >80% burnout probability within 3 days
-   - Message: "Energy debt building. Predicted crash: Thursday."
-   - Data: crash_date, probability, current_energy_debt
-
-3. ENERGY DEBT WARNING (Urgency: HIGH):
-   - Trigger: Energy debt score > 70
-   - Message: "Energy debt at 75/100. Rest needed soon."
-   - Data: debt_score, days_until_critical, recommended_rest_days
-
-4. OPTIMAL TIMING SUGGESTION (Urgency: MEDIUM):
-   - Trigger: Current energy > 20% above baseline
-   - Message: "Energy at peak. Great time for deep work."
-   - Data: current_energy, baseline, peak_duration_estimate
-
-5. PATTERN INSIGHT (Urgency: LOW):
-   - Trigger: New high-confidence pattern detected (confidence > 0.8)
-   - Message: "You complete 2x more tasks after morning meditation."
-   - Data: pattern_id, correlation, sample_size
-
-6. MEDITATION REMINDER (Urgency: MEDIUM):
-   - Trigger: 3+ days without meditation, stress increasing
-   - Message: "Stress up 40% since last meditation. Time to reset?"
-   - Data: days_since_meditation, stress_increase, avg_benefit
-
-7. STREAK CELEBRATION (Urgency: LOW):
-   - Trigger: 7+ day streak in any dimension
-   - Message: "7-day meditation streak! Keep it up."
-   - Data: streak_length, category, event_type
-
-INTERVENTION PRIORITIZATION:
------------------------------
-1. Sort by urgency: CRITICAL > HIGH > MEDIUM > LOW
-2. Within urgency: Sort by confidence score (forecast confidence, pattern strength)
-3. Deduplicate: Don't send multiple similar interventions (e.g., 2 overtraining warnings)
-4. Rate limit: Max 5 interventions per day (avoid notification fatigue)
-
-LLM INTEGRATION (Natural Language Generation):
------------------------------------------------
-- Use GPT-4o-mini to generate personalized messages
-- Input: Intervention type + data + user context
-- Output: Natural, empathetic message (not robotic)
-- Example:
-  Input: {"type": "warning", "consecutive_workout_days": 8}
-  Output: "Hey, I noticed you've been crushing it with 8 straight workout days! 💪 
-           But your body's telling me it needs a break. How about a rest day tomorrow?"
-
-LEARNING FROM FEEDBACK (Day 6+):
----------------------------------
-- Track user_rating (1-5 stars) and was_helpful (boolean)
-- Adjust intervention thresholds based on feedback:
-  - If user rates "overtraining" warnings as unhelpful (rating < 3):
-    → Increase threshold from 7 to 9 consecutive days
-  - If "optimal timing" suggestions rated helpful (rating > 4):
-    → Lower energy threshold from +20% to +15%
-- Store feedback in interventions table for future ML training
-
-EXAMPLE IMPLEMENTATION (Day 4):
---------------------------------
-```python
-async def check_intervention(self, user_id: int):
-    interventions = []
-    
-    # Fetch context
-    events = jarvis_db.get_events(user_id, days=7)
-    forecast = forecaster.generate_forecast(user_id)
-    
-    # Rule 1: Overtraining check
-    workout_events = [e for e in events if e['event_type'] == 'workout']
-    consecutive_days = count_consecutive_days(workout_events)
-    
-    if consecutive_days >= 7:
-        intervention = {
-            "intervention_type": "warning",
-            "urgency": "high",
-            "title": "Overtraining Detected",
-            "message": f"You've worked out {consecutive_days} days straight. Rest day recommended.",
-            "data": {"consecutive_workout_days": consecutive_days}
-        }
-        jarvis_db.create_intervention(user_id, intervention)
-        interventions.append(intervention)
-    
-    # Rule 2: Burnout forecast check
-    if forecast['crash_prediction']['probability'] > 80:
-        crash_date = forecast['crash_prediction']['predicted_date']
-        intervention = {
-            "intervention_type": "forecast",
-            "urgency": "critical",
-            "title": "Burnout Risk High",
-            "message": f"Energy debt building. Predicted crash: {crash_date}.",
-            "data": forecast['crash_prediction']
-        }
-        jarvis_db.create_intervention(user_id, intervention)
-        interventions.append(intervention)
-    
-    return interventions
-```
-
-DEPENDENCIES (Day 4):
----------------------
-- base_agent.py: LLM client for message generation
-- simple_jarvis_db.py: Store interventions, fetch events
-- agents/pattern_detector.py: Get detected patterns
-- agents/forecaster.py: Get burnout predictions
-
-INTEGRATION POINTS:
--------------------
-- Receives from: PatternDetectorAgent (patterns), ForecasterAgent (forecasts)
-- Feeds into: simple_main.py (deliver interventions to user)
-- Called by: POST /api/interventions/check endpoint (Day 4)
-- Scheduled by: Celery job (check every 6 hours on Day 6)
-
-STATUS: ✅ IMPLEMENTED - DAY 4 COMPLETE
-"""
-
-from .base_agent import BaseAgent
+﻿from .base_agent import BaseAgent
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import json
 
-
 class InterventionistAgent(BaseAgent):
-    """Agent 4: Interventionist - Proactive recommendations based on patterns and forecasts"""
-    
-    def __init__(self):
+    def __init__(self, db=None):
         super().__init__()
+        self.db = db
         self.logger.info("InterventionistAgent initialized")
+        self.overtraining_threshold = 7
+        self.low_energy_threshold = 4
+        self.sleep_deficit_hours = 6.5
+        self.meditation_gap_days = 3
+        self.insight_confidence_min = 0.7
+        self.streak_celebration_days = 7
+    
+    def process(self, data):
+        user_id = data.get('user_id')
+        if not user_id:
+            return {"interventions": [], "error": "Missing user_id"}
         
-        # Thresholds (can be adjusted based on user feedback)
-        self.overtraining_threshold = 7  # consecutive workout days
-        self.burnout_threshold = 70  # energy debt score
-        self.meditation_gap_threshold = 3  # days without meditation
-        self.energy_peak_threshold = 20  # % above baseline
-        self.pattern_confidence_threshold = 0.8
-        self.streak_celebration_threshold = 7  # days
-        
-    async def check_intervention(self, user_id: int, context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
-        """
-        Check if user needs any interventions based on current state.
-        
-        Args:
-            user_id: User ID
-            context: Optional context with events, forecast, patterns
-            
-        Returns:
-            List of intervention dictionaries
-        """
-        from simple_jarvis_db import jarvis_db
-        from agents.forecaster import forecaster
-        from agents.pattern_detector import pattern_detector
-        
+        insights = self._get_active_insights(user_id)
+        recent_events = self._get_recent_events(user_id, days=7)
         interventions = []
         
-        try:
-            # Gather context if not provided
-            if context is None:
-                context = {}
-            
-            if 'events' not in context:
-                context['events'] = jarvis_db.get_events(user_id, limit=30)
-            
-            if 'forecast' not in context:
-                try:
-                    context['forecast'] = await forecaster.generate_forecast(user_id, days=7)
-                except Exception as e:
-                    self.logger.warning(f"Could not get forecast: {e}")
-                    context['forecast'] = None
-            
-            if 'patterns' not in context:
-                try:
-                    context['patterns'] = await pattern_detector.detect_patterns(user_id)
-                except Exception as e:
-                    self.logger.warning(f"Could not get patterns: {e}")
-                    context['patterns'] = {}
-            
-            # Run all intervention checks
-            interventions.extend(await self._detect_overtraining(user_id, context['events']))
-            interventions.extend(await self._detect_burnout_risk(user_id, context))
-            interventions.extend(await self._detect_optimal_timing(user_id, context['events']))
-            interventions.extend(await self._detect_meditation_gap(user_id, context['events']))
-            interventions.extend(await self._detect_pattern_insight(user_id, context['patterns']))
-            interventions.extend(await self._detect_streak(user_id, context['events']))
-            
-            # Prioritize and deduplicate
-            interventions = self._prioritize_interventions(interventions)
-            
-            # Store in database
-            for intervention in interventions:
-                try:
-                    jarvis_db.create_intervention(
-                        user_id=user_id,
-                        intervention_type=intervention['intervention_type'],
-                        urgency=intervention['urgency'],
-                        title=intervention['title'],
-                        message=intervention['message'],
-                        data=intervention.get('data', {})
-                    )
-                except Exception as e:
-                    self.logger.error(f"Failed to store intervention: {e}")
-            
-            return interventions
-            
-        except Exception as e:
-            self.logger.error(f"Intervention check failed for user {user_id}: {e}")
+        for insight in insights:
+            intervention = self._convert_insight_to_intervention(insight, recent_events, user_id)
+            if intervention:
+                interventions.append(intervention)
+        
+        state_interventions = self._detect_state_based_interventions(recent_events, user_id)
+        interventions.extend(state_interventions)
+        prioritized = self._prioritize_interventions(interventions)
+        
+        for intervention in prioritized[:5]:
+            self._store_intervention(intervention, user_id)
+        
+        return {"interventions": prioritized[:5], "total_generated": len(interventions)}
+
+    def _get_active_insights(self, user_id):
+        if not self.db:
             return []
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            query = "SELECT id, pattern_type, description, confidence, data FROM patterns WHERE user_id = ? AND is_active = 1 AND confidence >= ? ORDER BY confidence DESC"
+            cursor.execute(query, (user_id, self.insight_confidence_min))
+            rows = cursor.fetchall()
+            insights = []
+            for row in rows:
+                data = json.loads(row[4]) if row[4] else {}
+                insights.append({
+                    'id': row[0],
+                    'pattern_type': row[1],
+                    'description': row[2],
+                    'confidence': row[3],
+                    'impact_metrics': data.get('output_effects', {}),
+                    'supporting_data': {
+                        'metric_a': data.get('metric_a'),
+                        'correlation_direction': data.get('direction', 'positive'),
+                        'type': data.get('type')
+                    }
+                })
+            return insights
     
-    async def _detect_overtraining(self, user_id: int, events: List[Dict]) -> List[Dict[str, Any]]:
-        """Detect 7+ consecutive workout days without rest"""
-        workout_events = [e for e in events if e.get('event_type') == 'workout']
-        
-        if not workout_events:
+    def _get_recent_events(self, user_id, days=7):
+        if not self.db:
             return []
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            since = (datetime.now() - timedelta(days=days)).isoformat()
+            query = "SELECT event_type, data, timestamp FROM events WHERE user_id = ? AND timestamp >= ? ORDER BY timestamp DESC"
+            cursor.execute(query, (user_id, since))
+            rows = cursor.fetchall()
+            events = []
+            for row in rows:
+                data = json.loads(row[1]) if row[1] else {}
+                events.append({'event_type': row[0], 'metrics': data, 'timestamp': row[2]})
+            return events
+
+    def _convert_insight_to_intervention(self, insight, recent_events, user_id):
+        metric_a = insight['supporting_data'].get('metric_a', '')
+        impact = insight['impact_metrics']
+        supporting = insight.get('supporting_data', {})
+        is_negative = supporting.get('correlation_direction') == 'negative'
+        behavior = metric_a.replace('_', ' ')
+        is_doing_behavior = self._is_user_doing_behavior(metric_a, recent_events)
         
-        # Sort by timestamp
-        workout_events.sort(key=lambda x: x.get('timestamp', ''))
+        if is_negative:
+            if is_doing_behavior:
+                return self._create_warning_intervention(insight, behavior, impact, user_id)
+        else:
+            if not is_doing_behavior:
+                return self._create_recommendation_intervention(insight, behavior, impact, user_id)
+        return None
+    
+    def _is_user_doing_behavior(self, metric_a, events):
+        behavior_map = {'workout': 'workout', 'sleep': 'sleep', 'meditation': 'meditation', 'reading': 'reading', 'study': 'study'}
+        behavior_key = None
+        for key, event_type in behavior_map.items():
+            if key in metric_a.lower():
+                behavior_key = event_type
+                break
+        if not behavior_key:
+            return False
+        recent_3_days = [e for e in events[:21]]
+        behavior_count = sum(1 for e in recent_3_days if behavior_key in e['event_type'].lower())
+        return behavior_count >= 2
+
+    def _create_warning_intervention(self, insight, behavior, impact, user_id):
+        top_impact = max(impact.items(), key=lambda x: abs(x[1]))
+        impact_metric = top_impact[0]
+        impact_value = abs(top_impact[1])
         
-        # Count consecutive days
-        consecutive_days = 1
+        return {
+            'type': 'warning',
+            'urgency': 'high',
+            'title': f'⚠️ {behavior.title()} Affecting Your {impact_metric.replace("_", " ").title()}',
+            'message': f'Your {behavior} is associated with {impact_value:.0f}% worse {impact_metric.replace("_", " ")}. Consider reducing or adjusting this activity.',
+            'confidence': insight['confidence'],
+            'insight_id': insight['id']
+        }
+
+    def _create_recommendation_intervention(self, insight, behavior, impact, user_id):
+        top_impact = max(impact.items(), key=lambda x: x[1])
+        impact_metric = top_impact[0]
+        impact_value = top_impact[1]
+        
+        return {
+            'type': 'suggestion',
+            'urgency': 'medium',
+            'title': f'💡 Try {behavior.title()} to Boost {impact_metric.replace("_", " ").title()}',
+            'message': f'Based on your patterns, {behavior} can improve your {impact_metric.replace("_", " ")} by {impact_value:.0f}%. You haven\'t done this recently.',
+            'confidence': insight['confidence'],
+            'insight_id': insight['id']
+        }
+
+    def _detect_state_based_interventions(self, events, user_id):
+        interventions = []
+        
+        overtraining = self._detect_overtraining(events)
+        if overtraining:
+            interventions.append(overtraining)
+        
+        low_energy = self._detect_low_energy_streak(events)
+        if low_energy:
+            interventions.append(low_energy)
+        
+        sleep_deficit = self._detect_sleep_deficit(events)
+        if sleep_deficit:
+            interventions.append(sleep_deficit)
+        
+        meditation_gap = self._detect_meditation_gap(events)
+        if meditation_gap:
+            interventions.append(meditation_gap)
+        
+        streak = self._detect_streak(events)
+        if streak:
+            interventions.append(streak)
+        
+        optimal_timing = self._detect_optimal_timing(events)
+        if optimal_timing:
+            interventions.append(optimal_timing)
+        
+        return interventions
+
+    def _detect_overtraining(self, events):
+        workout_events = [e for e in events if 'workout' in e['event_type'].lower()]
+        if len(workout_events) < self.overtraining_threshold:
+            return None
+        
+        consecutive_days = 0
         last_date = None
-        
-        for event in reversed(workout_events):
-            event_date = event.get('timestamp', '')[:10]
+        for event in sorted(workout_events, key=lambda x: x['timestamp'], reverse=True):
+            event_date = datetime.fromisoformat(event['timestamp']).date()
             if last_date is None:
-                last_date = event_date
-                continue
-            
-            # Check if this is the day before
-            last_dt = datetime.fromisoformat(last_date)
-            event_dt = datetime.fromisoformat(event_date)
-            
-            if (last_dt - event_dt).days == 1:
+                consecutive_days = 1
+            elif (last_date - event_date).days == 1:
                 consecutive_days += 1
-                last_date = event_date
             else:
                 break
+            last_date = event_date
         
         if consecutive_days >= self.overtraining_threshold:
-            message = await self._generate_intervention_message(
-                'overtraining',
-                {'consecutive_days': consecutive_days}
-            )
-            
-            return [{
-                'intervention_type': 'warning',
+            return {
+                'type': 'warning',
+                'urgency': 'critical',
+                'title': '🔴 Overtraining Alert',
+                'message': f'You\'ve worked out {consecutive_days} consecutive days. Consider taking a rest day to prevent burnout and injury.',
+                'confidence': 0.9,
+                'insight_id': None
+            }
+        return None
+
+    def _detect_low_energy_streak(self, events):
+        energy_events = [e for e in events if e.get('metrics', {}).get('energy_level') is not None]
+        if len(energy_events) < 2:
+            return None
+        
+        recent_energy = energy_events[:2]
+        low_energy_count = sum(1 for e in recent_energy if e['metrics']['energy_level'] <= self.low_energy_threshold)
+        
+        if low_energy_count >= 2:
+            avg_energy = sum(e['metrics']['energy_level'] for e in recent_energy) / len(recent_energy)
+            return {
+                'type': 'warning',
                 'urgency': 'high',
-                'title': 'Overtraining Detected',
-                'message': message,
-                'data': {
-                    'consecutive_workout_days': consecutive_days,
-                    'recovery_time_needed': '2-3 days'
-                }
-            }]
+                'title': '⚠️ Low Energy Detected',
+                'message': f'Your energy has been low (avg {avg_energy:.1f}/10) for {low_energy_count} days. Consider more sleep or light exercise.',
+                'confidence': 0.85,
+                'insight_id': None
+            }
+        return None
+
+    def _detect_sleep_deficit(self, events):
+        sleep_events = [e for e in events if 'sleep' in e['event_type'].lower() and e.get('metrics', {}).get('duration') is not None]
+        if len(sleep_events) < 3:
+            return None
         
-        return []
-    
-    async def _detect_burnout_risk(self, user_id: int, context: Dict) -> List[Dict[str, Any]]:
-        """Detect high burnout risk from forecast"""
-        forecast = context.get('forecast')
-        if not forecast:
-            return []
+        recent_sleep = sleep_events[:3]
+        avg_sleep = sum(e['metrics']['duration'] for e in recent_sleep) / len(recent_sleep)
         
-        burnout_score = forecast.get('burnout_score', 0)
-        
-        if burnout_score >= self.burnout_threshold:
-            urgency = 'critical' if burnout_score >= 80 else 'high'
-            
-            message = await self._generate_intervention_message(
-                'burnout',
-                {'burnout_score': burnout_score}
-            )
-            
-            return [{
-                'intervention_type': 'forecast',
-                'urgency': urgency,
-                'title': 'Burnout Risk High',
-                'message': message,
-                'data': {
-                    'burnout_score': burnout_score,
-                    'recommended_action': 'Schedule rest day soon'
-                }
-            }]
-        
-        return []
-    
-    async def _detect_optimal_timing(self, user_id: int, events: List[Dict]) -> List[Dict[str, Any]]:
-        """Detect when energy is above baseline (good time for deep work)"""
-        # Get recent energy scores (last 3 days)
-        recent_events = [e for e in events if self._is_within_days(e, 3)]
-        
-        if len(recent_events) < 3:
-            return []
-        
-        # Calculate energy from feelings
-        energy_scores = []
-        for event in recent_events:
-            feeling = event.get('feeling', '').lower()
-            if feeling in ['great', 'amazing', 'energized']:
-                energy_scores.append(3)
-            elif feeling in ['good', 'okay', 'fine']:
-                energy_scores.append(2)
-            elif feeling in ['tired', 'exhausted', 'drained']:
-                energy_scores.append(1)
-        
-        if not energy_scores:
-            return []
-        
-        current_energy = energy_scores[-1] if energy_scores else 2
-        baseline = sum(energy_scores) / len(energy_scores)
-        
-        # Check if 20% above baseline
-        if current_energy > baseline * (1 + self.energy_peak_threshold / 100):
-            message = await self._generate_intervention_message(
-                'optimal_timing',
-                {'current_energy': current_energy, 'baseline': baseline}
-            )
-            
-            return [{
-                'intervention_type': 'suggestion',
-                'urgency': 'medium',
-                'title': 'Energy at Peak',
-                'message': message,
-                'data': {
-                    'current_energy_level': current_energy,
-                    'baseline_energy': baseline,
-                    'suggested_activity': 'deep work or challenging tasks'
-                }
-            }]
-        
-        return []
-    
-    async def _detect_meditation_gap(self, user_id: int, events: List[Dict]) -> List[Dict[str, Any]]:
-        """Detect 3+ days without meditation"""
-        meditation_events = [e for e in events if e.get('event_type') == 'meditation']
-        
+        if avg_sleep < self.sleep_deficit_hours:
+            return {
+                'type': 'warning',
+                'urgency': 'critical',
+                'title': '🔴 Sleep Deficit Alert',
+                'message': f'You\'re averaging {avg_sleep:.1f} hours of sleep. Aim for 7-8 hours to improve energy and productivity.',
+                'confidence': 0.95,
+                'insight_id': None
+            }
+        return None
+
+    def _detect_meditation_gap(self, events):
+        meditation_events = [e for e in events if 'meditation' in e['event_type'].lower()]
         if not meditation_events:
-            # Check if user has ever meditated
-            if len(events) > 10:  # Only suggest if user has some history
-                return []
-            return []
+            days_since = 7
+        else:
+            last_meditation = datetime.fromisoformat(meditation_events[0]['timestamp'])
+            days_since = (datetime.now() - last_meditation).days
         
-        # Get last meditation date
-        meditation_events.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-        last_meditation = meditation_events[0].get('timestamp', '')
-        
-        if not last_meditation:
-            return []
-        
-        last_date = datetime.fromisoformat(last_meditation[:19])
-        days_since = (datetime.utcnow() - last_date).days
-        
-        if days_since >= self.meditation_gap_threshold:
-            message = await self._generate_intervention_message(
-                'meditation_gap',
-                {'days_since': days_since}
-            )
+        if days_since >= self.meditation_gap_days:
+            return {
+                'type': 'suggestion',
+                'urgency': 'low',
+                'title': '🧘 Meditation Reminder',
+                'message': f'It\'s been {days_since} days since your last meditation. A short session could boost your mood and energy.',
+                'confidence': 0.75,
+                'insight_id': None
+            }
+        return None
+
+    def _detect_streak(self, events):
+        for behavior in ['workout', 'sleep', 'meditation', 'reading']:
+            behavior_events = [e for e in events if behavior in e['event_type'].lower()]
+            if len(behavior_events) < self.streak_celebration_days:
+                continue
             
-            return [{
-                'intervention_type': 'suggestion',
-                'urgency': 'medium',
-                'title': 'Meditation Reminder',
-                'message': message,
-                'data': {
-                    'days_since_meditation': days_since,
-                    'suggested_duration': '10 minutes'
-                }
-            }]
-        
-        return []
-    
-    async def _detect_pattern_insight(self, user_id: int, patterns: Dict) -> List[Dict[str, Any]]:
-        """Detect new high-confidence patterns"""
-        interventions = []
-        
-        detected_patterns = patterns.get('patterns', [])
-        
-        for pattern in detected_patterns:
-            confidence = pattern.get('confidence', 0)
-            
-            if confidence >= self.pattern_confidence_threshold:
-                message = await self._generate_intervention_message(
-                    'pattern_insight',
-                    {'pattern': pattern}
-                )
-                
-                interventions.append({
-                    'intervention_type': 'insight',
-                    'urgency': 'low',
-                    'title': 'Pattern Detected',
-                    'message': message,
-                    'data': {
-                        'pattern_type': pattern.get('pattern_type', 'unknown'),
-                        'confidence': confidence,
-                        'description': pattern.get('description', '')
-                    }
-                })
-        
-        return interventions[:2]  # Limit to 2 insights to avoid overwhelming
-    
-    async def _detect_streak(self, user_id: int, events: List[Dict]) -> List[Dict[str, Any]]:
-        """Detect and celebrate 7+ day streaks"""
-        # Group events by type
-        event_types = {}
-        for event in events:
-            event_type = event.get('event_type')
-            if event_type:
-                if event_type not in event_types:
-                    event_types[event_type] = []
-                event_types[event_type].append(event)
-        
-        interventions = []
-        
-        for event_type, type_events in event_types.items():
-            # Check for consecutive days
-            type_events.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-            
-            consecutive_days = 1
+            consecutive_days = 0
             last_date = None
-            
-            for event in type_events:
-                event_date = event.get('timestamp', '')[:10]
+            for event in sorted(behavior_events, key=lambda x: x['timestamp'], reverse=True):
+                event_date = datetime.fromisoformat(event['timestamp']).date()
                 if last_date is None:
-                    last_date = event_date
-                    continue
-                
-                last_dt = datetime.fromisoformat(last_date)
-                event_dt = datetime.fromisoformat(event_date)
-                
-                if (last_dt - event_dt).days == 1:
+                    consecutive_days = 1
+                elif (last_date - event_date).days == 1:
                     consecutive_days += 1
-                    last_date = event_date
                 else:
                     break
+                last_date = event_date
             
-            if consecutive_days >= self.streak_celebration_threshold:
-                message = await self._generate_intervention_message(
-                    'streak',
-                    {'event_type': event_type, 'days': consecutive_days}
-                )
-                
-                interventions.append({
-                    'intervention_type': 'insight',
+            if consecutive_days >= self.streak_celebration_days:
+                return {
+                    'type': 'insight',
                     'urgency': 'low',
-                    'title': f'{consecutive_days}-Day Streak!',
-                    'message': message,
-                    'data': {
-                        'streak_type': event_type,
-                        'streak_length': consecutive_days
-                    }
-                })
+                    'title': f'🎉 {consecutive_days}-Day {behavior.title()} Streak!',
+                    'message': f'Amazing! You\'ve maintained your {behavior} habit for {consecutive_days} consecutive days. Keep it up!',
+                    'confidence': 1.0,
+                    'insight_id': None
+                }
+        return None
+
+    def _detect_optimal_timing(self, events):
+        study_events = [e for e in events if 'study' in e['event_type'].lower() and e.get('metrics', {}).get('productivity_score') is not None]
+        if len(study_events) < 3:
+            return None
         
-        return interventions[:1]  # Only celebrate one streak at a time
-    
-    async def _generate_intervention_message(self, message_type: str, data: Dict) -> str:
-        """Generate natural language intervention message using GPT-4o-mini"""
+        time_productivity = {}
+        for event in study_events:
+            hour = datetime.fromisoformat(event['timestamp']).hour
+            time_slot = 'morning' if 6 <= hour < 12 else 'afternoon' if 12 <= hour < 18 else 'evening' if 18 <= hour < 22 else 'night'
+            if time_slot not in time_productivity:
+                time_productivity[time_slot] = []
+            time_productivity[time_slot].append(event['metrics']['productivity_score'])
         
-        # Fallback messages (used if LLM fails)
-        fallback_messages = {
-            'overtraining': f"You've worked out {data.get('consecutive_days', 7)} days straight! 💪 Your body needs rest to recover and build strength. Consider a rest day tomorrow.",
-            'burnout': f"Energy debt is at {data.get('burnout_score', 70)}/100. You're running on fumes. Time to prioritize rest and recovery before you crash.",
-            'optimal_timing': f"Your energy is at peak levels right now! ⚡ Perfect time to tackle that challenging task or deep work session.",
-            'meditation_gap': f"It's been {data.get('days_since', 3)} days since your last meditation. Even 10 minutes can help reset your focus and reduce stress.",
-            'pattern_insight': f"I noticed a pattern: {data.get('pattern', {}).get('description', 'interesting correlation detected')}",
-            'streak': f"🎉 {data.get('days', 7)}-day {data.get('event_type', 'activity')} streak! You're building amazing habits. Keep it up!"
-        }
-        
-        # Try to generate with LLM for more personalized message
-        try:
-            system_prompt = """You are JARVIS, an empathetic AI wellness copilot. Generate a brief, supportive intervention message based on the user's data. 
-            Be warm, specific, and actionable. Use emojis sparingly. Keep it under 60 words."""
-            
-            user_prompt = f"Generate an intervention message for: {message_type}\nData: {json.dumps(data)}"
-            
-            response = await self.llm_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=100,
-                temperature=0.7
+        best_time = max(time_productivity.items(), key=lambda x: sum(x[1])/len(x[1]) if x[1] else 0)
+        if len(best_time[1]) >= 2:
+            avg_productivity = sum(best_time[1]) / len(best_time[1])
+            return {
+                'type': 'insight',
+                'urgency': 'low',
+                'title': f'⏰ You\'re Most Productive in the {best_time[0].title()}',
+                'message': f'Your {best_time[0]} study sessions average {avg_productivity:.1f}/10 productivity. Try scheduling important tasks then.',
+                'confidence': 0.8,
+                'insight_id': None
+            }
+        return None
+
+    def _prioritize_interventions(self, interventions):
+        urgency_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+        return sorted(interventions, key=lambda x: (urgency_order.get(x['urgency'], 999), -x['confidence']))
+
+    def _store_intervention(self, intervention, user_id):
+        if not self.db:
+            return
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            data = json.dumps({
+                'confidence': intervention.get('confidence'),
+                'insight_id': intervention.get('insight_id')
+            })
+            cursor.execute(
+                "INSERT INTO interventions (user_id, intervention_type, title, message, urgency, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, intervention['type'], intervention['title'], intervention['message'], intervention['urgency'], data, datetime.now().isoformat())
             )
-            
-            message = response.choices[0].message.content.strip()
-            return message if message else fallback_messages.get(message_type, "Heads up: something worth noting.")
-            
-        except Exception as e:
-            self.logger.warning(f"LLM message generation failed, using fallback: {e}")
-            return fallback_messages.get(message_type, "Heads up: something worth noting.")
-    
-    def _prioritize_interventions(self, interventions: List[Dict]) -> List[Dict]:
-        """Prioritize interventions by urgency and deduplicate"""
-        if not interventions:
-            return []
-        
-        # Urgency priority map
-        urgency_priority = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
-        
-        # Sort by urgency
-        interventions.sort(key=lambda x: urgency_priority.get(x['urgency'], 99))
-        
-        # Deduplicate by intervention type (keep highest urgency)
-        seen_types = set()
-        unique_interventions = []
-        
-        for intervention in interventions:
-            int_type = intervention['intervention_type']
-            if int_type not in seen_types:
-                seen_types.add(int_type)
-                unique_interventions.append(intervention)
-        
-        # Limit to 5 interventions to avoid fatigue
-        return unique_interventions[:5]
-    
-    def _is_within_days(self, event: Dict, days: int) -> bool:
-        """Check if event is within last N days"""
-        timestamp = event.get('timestamp', '')
-        if not timestamp:
-            return False
-        
-        try:
-            event_date = datetime.fromisoformat(timestamp[:19])
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-            return event_date >= cutoff_date
-        except:
-            return False
-
-
-# Global instance
-interventionist = InterventionistAgent()
+            conn.commit()

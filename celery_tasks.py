@@ -1,465 +1,478 @@
 """
-=============================================================================
-JARVIS 3.0 - CELERY TASK DEFINITIONS [DAY 6]
-=============================================================================
-
-PURPOSE:
---------
-Define all background tasks that Celery workers will execute.
-These tasks run asynchronously, separate from the FastAPI server.
-
-RESPONSIBILITY:
----------------
-- Define event-triggered tasks (run after user logs event)
-- Define scheduled tasks (daily workflow, pattern detection)
-- Implement task retry logic for reliability
-- Handle errors gracefully
-
-TASK TYPES WE'LL CREATE:
--------------------------
-1. analyze_event_task: Quick intervention check after event logged
-2. daily_workflow_task: Comprehensive analysis (2am daily)
-3. detect_patterns_all_users: Run pattern detection for all active users
-4. generate_forecasts_all_users: Run forecasts for all users
-5. cleanup_old_data: Remove old events/logs (monthly)
-
-TASK DECORATOR EXPLAINED:
---------------------------
-@app.task(
-    bind=True,              # Pass task instance as first arg (for retries)
-    max_retries=3,          # Retry up to 3 times on failure
-    default_retry_delay=60  # Wait 60 seconds between retries
-)
-def my_task(self, user_id):
-    try:
-        # Your task logic here
-        pass
-    except Exception as exc:
-        # Retry the task
-        raise self.retry(exc=exc)
-
-HOW TASKS ARE CALLED:
----------------------
-# From FastAPI endpoint:
-analyze_event_task.delay(user_id=123, event_id='abc')  # Fire and forget
-
-# With result tracking:
-result = daily_workflow_task.apply_async(args=[user_id])
-print(result.get(timeout=10))  # Wait for result
-
-# Schedule for later:
-from datetime import datetime, timedelta
-eta = datetime.now() + timedelta(hours=1)
-task.apply_async(args=[user_id], eta=eta)
-
-DATA FLOW:
-----------
-1. API receives event → Store in DB → Queue task
-2. Celery worker picks up task → Execute agent workflows
-3. Store results in DB → Send notifications if needed
-4. Return (user already has instant response from step 1)
-
-INTEGRATION POINTS:
--------------------
-- Called by: simple_main.py API endpoints
-- Uses: orchestrator, pattern_detector, forecaster, interventionist
-- Stores results in: jarvis_db
-
-STATUS: TO BE IMPLEMENTED
+Celery Tasks for Jarvis Backend
+All agent tasks with proper error handling, logging, and monitoring
 """
 
-# TODO: Import jarvis_celery app
-# TODO: Import orchestrator and agents
-# TODO: Import jarvis_db for data access
-# TODO: Import logging for task monitoring
-
-# YOUR CODE STARTS HERE:
-# ----------------------
-
-# Import Celery app (must be at top to avoid circular imports)
-from jarvis_celery import app
-
-# Import our agents and orchestrator
-from agents.orchestrator import orchestrator
-from agents.interventionist import interventionist
-from agents.pattern_detector import pattern_detector
-from agents.forecaster import forecaster
-
-# Import database
-from simple_jarvis_db import jarvis_db
-
-# Import utilities
 import logging
-import asyncio
 from datetime import datetime, timedelta
+from typing import Dict, Any, List
+import traceback
 
-# Setup logging
-logger = logging.getLogger(__name__)
+from celery import Task
+from celery.utils.log import get_task_logger
+
+# Import agents
+from agents.insight_generator import InsightGenerator
+from agents.forecaster import ForecasterAgent
+from agents.interventionist import InterventionistAgent
+from core.simple_jarvis_db import SimpleJarvisDB
+
+# Import Celery app (will be created in celery_app.py)
+from celery_app import app
+
+# Set up logging
+logger = get_task_logger(__name__)
 
 
-# ==============================================================================
-# TASK 1: Analyze Event (Event-Triggered)
-# ==============================================================================
-@app.task(name='jarvis.analyze_event', bind=True, max_retries=3)
-def analyze_event_task(self, user_id: int, event_id: str):
+# ==================== BASE TASK CLASS ====================
+
+class AgentTask(Task):
     """
-    Quick intervention check after user logs an event.
-    Target: <2 seconds execution time.
+    Base task class with common functionality for all agent tasks.
+    Handles database connections, error logging, and result tracking.
+    """
     
-    This runs immediately after event logging to provide real-time feedback.
-    If urgent interventions are found (e.g., overtraining), user gets notified.
-    """
-    try:
-        logger.info(f"Analyzing event {event_id} for user {user_id}")
-        
-        # Get the event details
-        event = {'id': event_id, 'user_id': user_id}
-        
-        # Run event-triggered workflow (quick check only)
-        result = asyncio.run(
-            orchestrator.run_event_triggered_workflow(user_id, event)
-        )
-        
-        # Log result
-        logger.info(f"Event analysis complete: {result}")
-        
-        # If urgent interventions found, send notification (optional)
-        if result.get('immediate_feedback'):
-            interventions = result['immediate_feedback']
-            if interventions:
-                logger.warning(f"Urgent interventions for user {user_id}: {interventions}")
-                # TODO: Send push notification here
-        
-        return {
-            'status': 'success',
-            'user_id': user_id,
-            'event_id': event_id,
-            'interventions_count': len(result.get('immediate_feedback', [])),
-            'execution_time_ms': result.get('execution_time_ms', 0)
-        }
-        
-    except Exception as exc:
-        logger.error(f"Error analyzing event {event_id}: {exc}")
-        # Retry task with exponential backoff
-        raise self.retry(exc=exc, countdown=60)
-
-
-# ==============================================================================
-# TASK 2: Daily Workflow (Scheduled)
-# ==============================================================================
-@app.task(name='jarvis.daily_workflow', bind=True, max_retries=2)
-def daily_workflow_task(self, user_id: int):
-    """
-    Run comprehensive daily analysis for a user.
-    Scheduled: Every day at 2:00 AM UTC.
+    def __init__(self):
+        self._db = None
     
-    Executes full workflow: PatternDetector → Forecaster → Interventionist
-    Provides morning insights and recommendations.
-    """
-    try:
-        logger.info(f"Starting daily workflow for user {user_id}")
-        
-        # Run full daily workflow
-        result = asyncio.run(
-            orchestrator.run_daily_workflow(user_id)
-        )
-        
-        logger.info(f"Daily workflow complete for user {user_id}: {result}")
-        
-        # Send morning summary notification (optional)
-        if result.get('success'):
-            summary = (
-                f"Good morning! Your daily insights:\n"
-                f"- {result.get('patterns_detected', 0)} patterns found\n"
-                f"- Forecast: {result.get('forecast_generated', False)}\n"
-                f"- {result.get('interventions_triggered', 0)} recommendations"
-            )
-            logger.info(f"Morning summary for user {user_id}: {summary}")
-            # TODO: Send push notification with summary
-        
-        return result
-        
-    except Exception as exc:
-        logger.error(f"Error in daily workflow for user {user_id}: {exc}")
-        # Retry once after 5 minutes
-        raise self.retry(exc=exc, countdown=300)
-
-
-# ==============================================================================
-# TASK 3: Detect Patterns for All Users (Scheduled)
-# ==============================================================================
-@app.task(name='jarvis.detect_patterns_all_users', bind=True)
-def detect_patterns_all_users_task(self):
-    """
-    Run pattern detection for all active users.
-    Scheduled: Every 6 hours.
+    @property
+    def db(self):
+        """Lazy database connection (created per task)"""
+        if self._db is None:
+            self._db = SimpleJarvisDB()
+        return self._db
     
-    Keeps the pattern database fresh by analyzing recent events.
-    """
-    try:
-        logger.info("Starting pattern detection for all users")
-        
-        # Get all active users (users with events in last 30 days)
-        users = get_active_users(days=30)
-        logger.info(f"Found {len(users)} active users")
-        
-        success_count = 0
-        error_count = 0
-        
-        # Process each user
-        for user_id in users:
-            try:
-                logger.info(f"Detecting patterns for user {user_id}")
-                
-                # Run pattern detection
-                patterns = asyncio.run(
-                    pattern_detector.detect_patterns(user_id)
-                )
-                
-                logger.info(f"Found {len(patterns)} patterns for user {user_id}")
-                success_count += 1
-                
-            except Exception as e:
-                logger.error(f"Failed to detect patterns for user {user_id}: {e}")
-                error_count += 1
-                continue  # Don't stop, process next user
-        
-        result = {
-            'status': 'complete',
-            'users_processed': success_count,
-            'users_failed': error_count,
-            'total_users': len(users)
-        }
-        
-        logger.info(f"Pattern detection complete: {result}")
-        return result
-        
-    except Exception as exc:
-        logger.error(f"Error in pattern detection task: {exc}")
-        return {'status': 'error', 'error': str(exc)}
-
-
-# ==============================================================================
-# TASK 4: Generate Forecasts for All Users (Scheduled)
-# ==============================================================================
-@app.task(name='jarvis.generate_forecasts_all_users', bind=True)
-def generate_forecasts_all_users_task(self):
-    """
-    Generate 7-day forecasts for all active users.
-    Scheduled: Every day at 1:00 AM UTC (before daily workflow).
+    def on_success(self, retval, task_id, args, kwargs):
+        """Called when task succeeds"""
+        logger.info(f"✅ Task {self.name} succeeded: {task_id}")
+        logger.info(f"   Result: {retval}")
     
-    Predicts capacity, burnout risk, and optimal timing for next 7 days.
-    """
-    try:
-        logger.info("Starting forecast generation for all users")
-        
-        # Get all active users
-        users = get_active_users(days=30)
-        logger.info(f"Found {len(users)} active users")
-        
-        success_count = 0
-        error_count = 0
-        
-        # Process each user
-        for user_id in users:
-            try:
-                logger.info(f"Generating forecast for user {user_id}")
-                
-                # Run forecast generation
-                forecast = asyncio.run(
-                    forecaster.generate_forecast(user_id, days=7)
-                )
-                
-                logger.info(f"Generated forecast for user {user_id}")
-                success_count += 1
-                
-            except Exception as e:
-                logger.error(f"Failed to generate forecast for user {user_id}: {e}")
-                error_count += 1
-                continue  # Don't stop, process next user
-        
-        result = {
-            'status': 'complete',
-            'users_processed': success_count,
-            'users_failed': error_count,
-            'total_users': len(users)
-        }
-        
-        logger.info(f"Forecast generation complete: {result}")
-        return result
-        
-    except Exception as exc:
-        logger.error(f"Error in forecast generation task: {exc}")
-        return {'status': 'error', 'error': str(exc)}
-
-
-# ==============================================================================
-# TASK 5: Cleanup Old Data (Scheduled)
-# ==============================================================================
-@app.task(name='jarvis.cleanup_old_data', bind=True)
-def cleanup_old_data_task(self, days=365):
-    """
-    Remove events, patterns, and interventions older than X days.
-    Scheduled: Monthly on 1st at 3:00 AM UTC.
-    Default: Remove data older than 365 days (1 year).
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        """Called when task fails"""
+        logger.error(f"❌ Task {self.name} failed: {task_id}")
+        logger.error(f"   Error: {exc}")
+        logger.error(f"   Traceback: {einfo}")
     
-    Keeps database size manageable and complies with data retention policies.
+    def on_retry(self, exc, task_id, args, kwargs, einfo):
+        """Called when task is retried"""
+        logger.warning(f"🔄 Task {self.name} retrying: {task_id}")
+        logger.warning(f"   Reason: {exc}")
+    
+    def after_return(self, status, retval, task_id, args, kwargs, einfo):
+        """Called after task returns (cleanup)"""
+        # Close database connection
+        if self._db is not None:
+            # SimpleJarvisDB uses context managers, no explicit close needed
+            self._db = None
+
+
+# ==================== AGENT TASKS ====================
+
+@app.task(base=AgentTask, bind=True, name='celery_tasks.run_insight_generator')
+def run_insight_generator(self, user_ids: List[int] = None):
     """
-    try:
-        logger.info(f"Starting data cleanup (removing data older than {days} days)")
-        
-        # Calculate cutoff date
-        cutoff_date = datetime.now() - timedelta(days=days)
-        cutoff_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
-        
-        import sqlite3
-        conn = sqlite3.connect(jarvis_db.db_path)
-        cursor = conn.cursor()
-        
-        # Delete old events
-        cursor.execute(
-            "DELETE FROM events WHERE timestamp < ?",
-            (cutoff_str,)
-        )
-        events_deleted = cursor.rowcount
-        logger.info(f"Deleted {events_deleted} old events")
-        
-        # Delete old patterns
-        cursor.execute(
-            "DELETE FROM patterns WHERE last_seen < ?",
-            (cutoff_str,)
-        )
-        patterns_deleted = cursor.rowcount
-        logger.info(f"Deleted {patterns_deleted} old patterns")
-        
-        # Delete old interventions
-        cursor.execute(
-            "DELETE FROM interventions WHERE created_at < ?",
-            (cutoff_str,)
-        )
-        interventions_deleted = cursor.rowcount
-        logger.info(f"Deleted {interventions_deleted} old interventions")
-        
-        conn.commit()
-        conn.close()
-        
-        result = {
-            'status': 'success',
-            'cutoff_date': cutoff_str,
-            'events_deleted': events_deleted,
-            'patterns_deleted': patterns_deleted,
-            'interventions_deleted': interventions_deleted,
-            'total_deleted': events_deleted + patterns_deleted + interventions_deleted
-        }
-        
-        logger.info(f"Data cleanup complete: {result}")
-        return result
-        
-    except Exception as exc:
-        logger.error(f"Error in data cleanup task: {exc}")
-        return {'status': 'error', 'error': str(exc)}
-
-
-# ==============================================================================
-# HELPER FUNCTIONS
-# ==============================================================================
-
-def get_active_users(days=30):
-    """
-    Get list of users who have logged events in the last X days.
+    Run InsightGenerator for specified users or all users.
     
     Args:
-        days: Number of days to look back (default: 30)
+        user_ids: List of user IDs to process. If None, process all users.
     
     Returns:
-        List of user IDs
+        Dict with results per user
     """
     try:
-        import sqlite3
-        conn = sqlite3.connect(jarvis_db.db_path)
-        cursor = conn.cursor()
+        logger.info(f"🧠 Starting InsightGenerator task at {datetime.now()}")
         
-        # Calculate cutoff date
-        cutoff_date = datetime.now() - timedelta(days=days)
-        cutoff_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
+        # Get user IDs if not provided
+        if user_ids is None:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT DISTINCT user_id FROM events")
+                user_ids = [row[0] for row in cursor.fetchall()]
         
-        # Get distinct user IDs with recent events
-        cursor.execute("""
-            SELECT DISTINCT user_id 
-            FROM events 
-            WHERE timestamp > ?
-            ORDER BY user_id
-        """, (cutoff_str,))
+        if not user_ids:
+            logger.warning("⚠️  No users found to process")
+            return {'status': 'no_users', 'users_processed': 0}
         
-        users = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        logger.info(f"   Processing {len(user_ids)} users")
         
-        return users
+        # Process each user
+        results = {}
+        agent = InsightGenerator(db=self.db)
+        
+        for user_id in user_ids:
+            try:
+                logger.info(f"   Processing user {user_id}...")
+                result = agent.process({'user_id': user_id})
+                
+                insights_count = len(result.get('insights', []))
+                logger.info(f"   ✅ User {user_id}: {insights_count} insights generated")
+                
+                results[user_id] = {
+                    'status': 'success',
+                    'insights_count': insights_count,
+                    'insights': result.get('insights', [])
+                }
+                
+            except Exception as e:
+                logger.error(f"   ❌ User {user_id} failed: {e}")
+                logger.error(f"   {traceback.format_exc()}")
+                results[user_id] = {
+                    'status': 'error',
+                    'error': str(e)
+                }
+        
+        # Summary
+        total_insights = sum(r.get('insights_count', 0) for r in results.values() if r.get('status') == 'success')
+        success_count = sum(1 for r in results.values() if r.get('status') == 'success')
+        
+        logger.info(f"🎉 InsightGenerator completed:")
+        logger.info(f"   Users processed: {success_count}/{len(user_ids)}")
+        logger.info(f"   Total insights: {total_insights}")
+        
+        return {
+            'status': 'completed',
+            'timestamp': datetime.now().isoformat(),
+            'users_processed': success_count,
+            'total_users': len(user_ids),
+            'total_insights': total_insights,
+            'results': results
+        }
         
     except Exception as e:
-        logger.error(f"Error getting active users: {e}")
-        return []
+        logger.error(f"❌ InsightGenerator task failed: {e}")
+        logger.error(f"   {traceback.format_exc()}")
+        raise
 
 
-def send_notification(user_id: int, title: str, message: str):
+@app.task(base=AgentTask, bind=True, name='celery_tasks.run_forecaster')
+def run_forecaster(self, user_ids: List[int] = None):
     """
-    Send push notification to user.
+    Run ForecasterAgent for specified users or all users.
     
     Args:
-        user_id: User ID to send notification to
-        title: Notification title
-        message: Notification message
+        user_ids: List of user IDs to process. If None, process all users.
     
-    TODO: Implement push notification integration (Firebase, OneSignal, etc.)
-    """
-    logger.info(f"Notification for user {user_id}: {title} - {message}")
-    # TODO: Integrate with push notification service
-    pass
-
-
-# ==============================================================================
-# TASK 6: Health Check (Optional)
-# ==============================================================================
-@app.task(name='jarvis.health_check')
-def health_check_task():
-    """
-    Simple health check to verify system is operational.
-    Scheduled: Every hour.
-    
-    Verifies that:
-    - Database is accessible
-    - Agents can be imported
-    - Redis is working (if this task runs, Redis is working!)
+    Returns:
+        Dict with results per user
     """
     try:
-        # Check database
-        import sqlite3
-        conn = sqlite3.connect(jarvis_db.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM events")
-        event_count = cursor.fetchone()[0]
-        conn.close()
+        logger.info(f"🔮 Starting Forecaster task at {datetime.now()}")
         
-        result = {
+        # Get user IDs if not provided
+        if user_ids is None:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT DISTINCT user_id FROM events")
+                user_ids = [row[0] for row in cursor.fetchall()]
+        
+        if not user_ids:
+            logger.warning("⚠️  No users found to process")
+            return {'status': 'no_users', 'users_processed': 0}
+        
+        logger.info(f"   Processing {len(user_ids)} users")
+        
+        # Process each user
+        results = {}
+        agent = ForecasterAgent(db=self.db)
+        
+        for user_id in user_ids:
+            try:
+                logger.info(f"   Processing user {user_id}...")
+                result = agent.process({'user_id': user_id})
+                
+                energy_debt = result.get('energy_debt', 0)
+                forecast_days = len(result.get('forecast', []))
+                crash_risk = result.get('crash_risk', {}).get('risk_level', 'unknown')
+                
+                logger.info(f"   ✅ User {user_id}: Energy debt {energy_debt:.1f}%, Crash risk: {crash_risk}")
+                
+                results[user_id] = {
+                    'status': 'success',
+                    'energy_debt': energy_debt,
+                    'forecast_days': forecast_days,
+                    'crash_risk': crash_risk,
+                    'forecast': result.get('forecast', [])
+                }
+                
+            except Exception as e:
+                logger.error(f"   ❌ User {user_id} failed: {e}")
+                logger.error(f"   {traceback.format_exc()}")
+                results[user_id] = {
+                    'status': 'error',
+                    'error': str(e)
+                }
+        
+        # Summary
+        success_count = sum(1 for r in results.values() if r.get('status') == 'success')
+        avg_energy_debt = sum(r.get('energy_debt', 0) for r in results.values() if r.get('status') == 'success') / max(success_count, 1)
+        
+        logger.info(f"🎉 Forecaster completed:")
+        logger.info(f"   Users processed: {success_count}/{len(user_ids)}")
+        logger.info(f"   Avg energy debt: {avg_energy_debt:.1f}%")
+        
+        return {
+            'status': 'completed',
+            'timestamp': datetime.now().isoformat(),
+            'users_processed': success_count,
+            'total_users': len(user_ids),
+            'avg_energy_debt': avg_energy_debt,
+            'results': results
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Forecaster task failed: {e}")
+        logger.error(f"   {traceback.format_exc()}")
+        raise
+
+
+@app.task(base=AgentTask, bind=True, name='celery_tasks.run_interventionist')
+def run_interventionist(self, user_ids: List[int] = None):
+    """
+    Run InterventionistAgent for specified users or all users.
+    
+    Args:
+        user_ids: List of user IDs to process. If None, process all users.
+    
+    Returns:
+        Dict with results per user
+    """
+    try:
+        logger.info(f"💊 Starting Interventionist task at {datetime.now()}")
+        
+        # Get user IDs if not provided
+        if user_ids is None:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT DISTINCT user_id FROM events")
+                user_ids = [row[0] for row in cursor.fetchall()]
+        
+        if not user_ids:
+            logger.warning("⚠️  No users found to process")
+            return {'status': 'no_users', 'users_processed': 0}
+        
+        logger.info(f"   Processing {len(user_ids)} users")
+        
+        # Process each user
+        results = {}
+        agent = InterventionistAgent(db=self.db)
+        
+        for user_id in user_ids:
+            try:
+                logger.info(f"   Processing user {user_id}...")
+                result = agent.process({'user_id': user_id})
+                
+                interventions_count = len(result.get('interventions', []))
+                warnings_count = len(result.get('warnings', []))
+                recommendations_count = len(result.get('recommendations', []))
+                
+                logger.info(f"   ✅ User {user_id}: {interventions_count} interventions, {warnings_count} warnings")
+                
+                results[user_id] = {
+                    'status': 'success',
+                    'interventions_count': interventions_count,
+                    'warnings_count': warnings_count,
+                    'recommendations_count': recommendations_count,
+                    'interventions': result.get('interventions', [])
+                }
+                
+            except Exception as e:
+                logger.error(f"   ❌ User {user_id} failed: {e}")
+                logger.error(f"   {traceback.format_exc()}")
+                results[user_id] = {
+                    'status': 'error',
+                    'error': str(e)
+                }
+        
+        # Summary
+        total_interventions = sum(r.get('interventions_count', 0) for r in results.values() if r.get('status') == 'success')
+        total_warnings = sum(r.get('warnings_count', 0) for r in results.values() if r.get('status') == 'success')
+        success_count = sum(1 for r in results.values() if r.get('status') == 'success')
+        
+        logger.info(f"🎉 Interventionist completed:")
+        logger.info(f"   Users processed: {success_count}/{len(user_ids)}")
+        logger.info(f"   Total interventions: {total_interventions}")
+        logger.info(f"   Total warnings: {total_warnings}")
+        
+        return {
+            'status': 'completed',
+            'timestamp': datetime.now().isoformat(),
+            'users_processed': success_count,
+            'total_users': len(user_ids),
+            'total_interventions': total_interventions,
+            'total_warnings': total_warnings,
+            'results': results
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Interventionist task failed: {e}")
+        logger.error(f"   {traceback.format_exc()}")
+        raise
+
+
+# ==================== MONITORING TASKS ====================
+
+@app.task(name='celery_tasks.health_check')
+def health_check():
+    """
+    Health check task to verify Celery is running properly.
+    Runs every 5 minutes.
+    """
+    try:
+        logger.info("❤️  Health check running...")
+        
+        # Check database connection
+        db = SimpleJarvisDB()
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM events")
+            event_count = cursor.fetchone()[0]
+        
+        logger.info(f"   ✅ Database accessible: {event_count} events")
+        
+        return {
             'status': 'healthy',
             'timestamp': datetime.now().isoformat(),
             'database': 'connected',
-            'total_events': event_count,
-            'agents': {
-                'orchestrator': 'loaded',
-                'pattern_detector': 'loaded',
-                'forecaster': 'loaded',
-                'interventionist': 'loaded'
-            }
+            'event_count': event_count
         }
         
-        logger.info(f"Health check passed: {result}")
-        return result
-        
-    except Exception as exc:
-        logger.error(f"Health check failed: {exc}")
+    except Exception as e:
+        logger.error(f"❌ Health check failed: {e}")
         return {
             'status': 'unhealthy',
-            'error': str(exc),
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'error': str(e)
         }
+
+
+@app.task(name='celery_tasks.cleanup_old_data')
+def cleanup_old_data(days_to_keep: int = 90):
+    """
+    Clean up old data from database.
+    Runs weekly on Sunday at 3am.
+    
+    Args:
+        days_to_keep: Number of days of data to keep (default: 90)
+    """
+    try:
+        logger.info(f"🧹 Starting database cleanup (keeping {days_to_keep} days)...")
+        
+        cutoff_date = (datetime.now() - timedelta(days=days_to_keep)).isoformat()
+        
+        db = SimpleJarvisDB()
+        deleted_counts = {}
+        
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Clean old events
+            cursor.execute(
+                "DELETE FROM events WHERE timestamp < ?",
+                (cutoff_date,)
+            )
+            deleted_counts['events'] = cursor.rowcount
+            
+            # Clean old patterns (keep insights)
+            cursor.execute(
+                "DELETE FROM patterns WHERE last_seen < ?",
+                (cutoff_date,)
+            )
+            deleted_counts['patterns'] = cursor.rowcount
+            
+            # Clean old interventions
+            cursor.execute(
+                "DELETE FROM interventions WHERE timestamp < ?",
+                (cutoff_date,)
+            )
+            deleted_counts['interventions'] = cursor.rowcount
+            
+            conn.commit()
+        
+        logger.info(f"✅ Cleanup completed:")
+        logger.info(f"   Events deleted: {deleted_counts['events']}")
+        logger.info(f"   Patterns deleted: {deleted_counts['patterns']}")
+        logger.info(f"   Interventions deleted: {deleted_counts['interventions']}")
+        
+        return {
+            'status': 'completed',
+            'timestamp': datetime.now().isoformat(),
+            'cutoff_date': cutoff_date,
+            'deleted_counts': deleted_counts
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Cleanup failed: {e}")
+        logger.error(f"   {traceback.format_exc()}")
+        raise
+
+
+# ==================== UTILITY TASKS ====================
+
+@app.task(name='celery_tasks.run_all_agents')
+def run_all_agents(user_ids: List[int] = None):
+    """
+    Convenience task to run all agents in sequence.
+    Useful for manual triggers or API endpoints.
+    
+    Args:
+        user_ids: List of user IDs to process. If None, process all users.
+    """
+    try:
+        logger.info("🚀 Running all agents in sequence...")
+        
+        # Run in order: Insights → Forecast → Interventions
+        insights_result = run_insight_generator(user_ids=user_ids)
+        forecast_result = run_forecaster(user_ids=user_ids)
+        interventions_result = run_interventionist(user_ids=user_ids)
+        
+        return {
+            'status': 'completed',
+            'timestamp': datetime.now().isoformat(),
+            'insights': insights_result,
+            'forecast': forecast_result,
+            'interventions': interventions_result
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Run all agents failed: {e}")
+        raise
+
+
+@app.task(name='celery_tasks.run_single_user_analysis')
+def run_single_user_analysis(user_id: int):
+    """
+    Run complete analysis for a single user.
+    Used for event-triggered workflows (e.g., after user logs event).
+    
+    Args:
+        user_id: User ID to analyze
+    """
+    try:
+        logger.info(f"👤 Running single user analysis for user {user_id}...")
+        
+        results = {}
+        
+        # Run InsightGenerator
+        agent = InsightGenerator(db=SimpleJarvisDB())
+        results['insights'] = agent.process({'user_id': user_id})
+        
+        # Run Forecaster
+        agent = ForecasterAgent(db=SimpleJarvisDB())
+        results['forecast'] = agent.process({'user_id': user_id})
+        
+        # Run Interventionist
+        agent = InterventionistAgent(db=SimpleJarvisDB())
+        results['interventions'] = agent.process({'user_id': user_id})
+        
+        logger.info(f"✅ Single user analysis completed for user {user_id}")
+        
+        return {
+            'status': 'completed',
+            'user_id': user_id,
+            'timestamp': datetime.now().isoformat(),
+            'results': results
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Single user analysis failed for user {user_id}: {e}")
+        raise

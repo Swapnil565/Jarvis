@@ -422,4 +422,3 @@ def clear_all_cache() -> bool:
 #     invalidate_user_cache(user_id)
 #     
 #     return {"id": event_id}
-

@@ -82,27 +82,27 @@ from simple_auth import router as auth_router, get_current_user
 from simple_jarvis_db import jarvis_db
 from app.models.event import EventCreate, EventResponse, EventCategory
 from agents.data_collector import data_collector
-from agents.pattern_detector import pattern_detector
-from agents.forecaster import forecaster
+
+# NOTE: pattern_detector and forecaster removed from imports
+# These are now called directly within endpoints to avoid import errors
+# from agents.insight_generator import InsightGenerator
+# from agents.forecaster import ForecasterAgent
 
 # Import Celery tasks for background processing
 from celery.result import AsyncResult
-from jarvis_celery import app as celery_app
-from celery_tasks import (
-    analyze_event_task,
-    daily_workflow_task,
-    detect_patterns_all_users_task,
-    generate_forecasts_all_users_task,
-    health_check_task
-)
+from celery_app import app as celery_app  # Updated import
+# NOTE: Old celery_tasks.py had different task names
+# New tasks are in celery_tasks.py with updated names
 
-# DAY 7: Import optimization middleware
-from app.middleware.cache_manager import get as cache_get, set as cache_set, invalidate_user_cache
-from app.middleware.rate_limiter import init_rate_limiter, limiter
-from app.middleware.performance_monitor import performance_logging_middleware
+# DAY 7: Import optimization middleware (optional - commented out for basic deployment)
+# from app.middleware.cache_manager import get as cache_get, set as cache_set, invalidate_user_cache
+# from app.middleware.rate_limiter import init_rate_limiter, limiter
+# from app.middleware.performance_monitor import performance_logging_middleware
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging via centralized settings
+from config import settings
+
+logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO), format=settings.LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 # Pydantic models for events
@@ -135,6 +135,19 @@ class HealthCheckResponse(BaseModel):
     services: Dict[str, Any] = {}
     uptime_seconds: Optional[float] = None
 
+# ==================== FRONTEND MODELS ====================
+class LogEntryRequest(BaseModel):
+    type: str  # morning_mood, quick_log, end_of_day
+    timestamp: str
+    data: Dict[str, Any]
+
+class DashboardData(BaseModel):
+    dimensions: list
+    currentStreak: int
+    longestStreak: int
+    hasNewInsights: bool
+    hasActiveInterventions: bool
+
 # Create FastAPI application
 app = FastAPI(
     title="JARVIS Backend",
@@ -153,11 +166,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# DAY 7: Add performance monitoring middleware
-app.middleware("http")(performance_logging_middleware)
-
-# DAY 7: Initialize rate limiter
-init_rate_limiter(app)
+# DAY 7: Performance monitoring and rate limiting (commented out for basic deployment)
+# app.middleware("http")(performance_logging_middleware)
+# init_rate_limiter(app)
 
 # Include auth router
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["Authentication"])
@@ -219,6 +230,141 @@ async def health_check():
             message=f"Health check failed: {str(e)}",
             version="3.0.0"
         )
+
+# ==================== FRONTEND COMPATIBILITY LAYER ====================
+
+@app.post("/api/onboarding/complete")
+async def complete_onboarding(data: Dict[str, Any], current_user: dict = Depends(get_current_user)):
+    """Stub for onboarding completion"""
+    # In a real app, save 'data' to user_settings or profile table
+    logger.info(f"User {current_user['id']} completed onboarding: {data}")
+    return {"userId": current_user["id"], "hypothesis": "Baseline established. We will monitor your energy levels."}
+
+@app.post("/api/logs")
+async def create_log_entry(entry: LogEntryRequest, current_user: dict = Depends(get_current_user)):
+    """Frontend-compatible log entry endpoint"""
+    category_map = {
+        'morning_mood': 'mental', 
+        'quick_log': 'physical', 
+        'end_of_day': 'mental'
+    }
+    event_type_map = {
+        'morning_mood': 'mood',
+        'quick_log': 'quick_entry',
+        'end_of_day': 'reflection'
+    }
+    
+    cat = category_map.get(entry.type, 'mental')
+    # Use provided event_type in data if available, else default mapping
+    evt = entry.data.get('event_type') or event_type_map.get(entry.type, 'note')
+    
+    # Handle mood/feeling
+    feeling = entry.data.get('mood') or entry.data.get('feeling')
+    if isinstance(feeling, int):
+        feeling_map = {1: "terrible", 2: "bad", 3: "okay", 4: "good", 5: "great", 6: "excellent", 7: "unstoppable"}
+        feeling = feeling_map.get(feeling, f"Rated {feeling}/10")
+    elif isinstance(feeling, str) and not feeling:
+        feeling = None
+
+    try:
+        event_id = jarvis_db.create_event(
+            user_id=current_user["id"],
+            category=cat,
+            event_type=evt,
+            feeling=str(feeling) if feeling else None,
+            data=entry.data
+        )
+        return {"id": str(event_id), "success": True}
+    except Exception as e:
+        logger.error(f"Failed to create log entry: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/dashboard", response_model=DashboardData)
+async def get_dashboard(current_user: dict = Depends(get_current_user)):
+    """Aggregate dashboard data for frontend"""
+    try:
+        # Get stats
+        stats = jarvis_db.get_stats(current_user["id"])
+        
+        # Get today's breakdown (simplified version of get_today_status)
+        today_events = jarvis_db.get_events_today(current_user["id"])
+        
+        physical_status = "good"
+        mental_status = "good"
+        spiritual_status = "good"
+        
+        # Simple heuristic for status
+        p_count = sum(1 for e in today_events if e['category'] == 'physical')
+        m_count = sum(1 for e in today_events if e['category'] == 'mental')
+        s_count = sum(1 for e in today_events if e['category'] == 'spiritual')
+        
+        if p_count == 0: physical_status = "warning"
+        if m_count == 0: mental_status = "warning"
+        if s_count == 0: spiritual_status = "warning"
+
+        dimensions = [
+            {"dimension": "physical", "status": physical_status, "score": 75 if p_count > 0 else 40, "insight": "Keep moving!"},
+            {"dimension": "mental", "status": mental_status, "score": 80 if m_count > 0 else 50, "insight": "Stay sharp."},
+            {"dimension": "spiritual", "status": spiritual_status, "score": 90 if s_count > 0 else 60, "insight": "Finding balance."}
+        ]
+        
+        return {
+            "dimensions": dimensions,
+            "currentStreak": 3, # Placeholder - needs real calculation from DB
+            "longestStreak": 5, 
+            "hasNewInsights": stats.get('active_patterns', 0) > 0,
+            "hasActiveInterventions": stats.get('unread_interventions', 0) > 0
+        }
+    except Exception as e:
+        logger.error(f"Dashboard error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/insights/patterns")
+async def get_frontend_patterns(dimension: Optional[str] = None, type: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    """Frontend-compatible patterns endpoint"""
+    try:
+        from core.simple_jarvis_db import SimpleJarvisDB
+        db = SimpleJarvisDB()
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, description, pattern_type, confidence, data FROM patterns WHERE user_id = ?", (current_user["id"],))
+            rows = cursor.fetchall()
+            
+            results = []
+            for row in rows:
+                results.append({
+                    "id": str(row[0]),
+                    "title": row[1].split('.')[0] if row[1] else "Pattern Detected",
+                    "dimension": "physical", # Default, ideally stored in DB
+                    "type": "watch" if row[3] < 0.8 else "strength",
+                    "confidence": row[3],
+                    "discovered": "2023-01-01", # Placeholder
+                    "pattern": row[1],
+                    "evidence": ["Data point A", "Data point B"],
+                    "whyItMatters": "High correlation detected",
+                    "suggestion": "Keep it up"
+                })
+            return results
+    except Exception as e:
+        logger.error(f"Patterns error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/interventions/active")
+async def get_active_interventions_frontend(current_user: dict = Depends(get_current_user)):
+    """Frontend-compatible active interventions"""
+    try:
+        interventions = jarvis_db.get_pending_interventions(current_user["id"])
+        # Transform to match frontend interface if needed
+        # Frontend expects: id, title, message, reasoning, priority, category...
+        # Backend returns dicts from DB. Ensure keys match.
+        return interventions
+    except Exception as e:
+         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/interventions/{id}/dismiss")
+async def dismiss_intervention_frontend(id: int, action: Optional[Dict[str, Any]] = None, current_user: dict = Depends(get_current_user)):
+    jarvis_db.mark_intervention_delivered(id)
+    return {"success": True}
 
 # ==================== EVENT ENDPOINTS ====================
 
@@ -375,7 +521,7 @@ async def delete_event(
 # ==================== DATA COLLECTOR AGENT ENDPOINTS (DAY 2) ====================
 
 @app.post("/api/events/parse", status_code=status.HTTP_201_CREATED)
-@limiter.limit("50/minute")  # DAY 7: Rate limit expensive LLM calls
+# @limiter.limit("50/minute")  # DAY 7: Rate limit expensive LLM calls (commented for basic deployment)
 async def parse_and_create_event(
     text: str,
     current_user: dict = Depends(get_current_user)
@@ -407,21 +553,23 @@ async def parse_and_create_event(
         )
         
         # DAY 7: Invalidate user cache since data changed
-        invalidate_user_cache(current_user["id"])
+        # invalidate_user_cache(current_user["id"])  # Commented for basic deployment
         
         event = jarvis_db.get_event_by_id(event_id)
         
         # 🔥 Queue background task for real-time analysis
         # This runs asynchronously in a Celery worker (non-blocking)
         # Pattern: Fire-and-forget (don't wait for result)
-        task = analyze_event_task.delay(current_user["id"], event_id)
-        logger.info(f"Queued analysis task {task.id} for user {current_user['id']}, event {event_id}")
+        # NOTE: Celery tasks commented out until Redis is installed
+        # from celery_tasks import run_single_user_analysis
+        # task = run_single_user_analysis.delay(current_user["id"])
+        # logger.info(f"Queued analysis task {task.id} for user {current_user['id']}, event {event_id}")
         
         return {
             "message": "Event parsed and logged successfully",
             "event": event,
-            "parsed_from": text,
-            "analysis_task_id": task.id  # User can check task status later
+            "parsed_from": text
+            # "analysis_task_id": task.id  # Uncomment when Redis is available
         }
         
     except HTTPException:
@@ -588,23 +736,30 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/insights/generate")
-async def generate_insights(
+def generate_insights(
     days: int = 90,
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Trigger pattern detection for the authenticated user and return detected patterns.
+    Trigger insight generation for the authenticated user and return detected patterns.
     Optional: specify number of days to analyze (default 90).
     Requires authentication.
     """
     try:
-        # Run the detector (async)
-        patterns = await pattern_detector.detect_patterns(current_user["id"], limit=days)
+        from agents.insight_generator import InsightGenerator
+        from core.simple_jarvis_db import SimpleJarvisDB
+        
+        # Run the insight generator (synchronous)
+        db = SimpleJarvisDB()
+        agent = InsightGenerator(db=db)
+        result = agent.generate_insights(user_id=current_user["id"], days_back=days)
+        
+        insights = result.get('insights', [])
 
         return {
             "message": "Insights generated",
-            "patterns": patterns,
-            "count": len(patterns)
+            "insights": insights,
+            "count": len(insights)
         }
 
     except Exception as e:
@@ -615,11 +770,67 @@ async def generate_insights(
         )
 
 
+@app.get("/api/insights")
+def get_insights(current_user: dict = Depends(get_current_user)):
+    """
+    Get existing insights/patterns for the authenticated user.
+    Returns all patterns from the database.
+    """
+    try:
+        from core.simple_jarvis_db import SimpleJarvisDB
+        
+        db = SimpleJarvisDB()
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, input_metric, output_metric, correlation, 
+                       improvement, first_seen, last_seen, occurrence_count, details
+                FROM patterns
+                WHERE user_id = ?
+                ORDER BY last_seen DESC
+            """, (current_user["id"],))
+            
+            rows = cursor.fetchall()
+            
+            insights = []
+            for row in rows:
+                insights.append({
+                    "id": row[0],
+                    "input_metric": row[1],
+                    "output_metric": row[2],
+                    "correlation": row[3],
+                    "improvement": row[4],
+                    "first_seen": row[5],
+                    "last_seen": row[6],
+                    "occurrence_count": row[7],
+                    "details": row[8]
+                })
+            
+            return {
+                "insights": insights,
+                "count": len(insights)
+            }
+    
+    except Exception as e:
+        logger.error(f"Failed to get insights: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get insights: {str(e)}"
+        )
+
+
 @app.post("/api/forecast")
-async def generate_forecast(days: int = 7, current_user: dict = Depends(get_current_user)):
+def generate_forecast(days: int = 7, current_user: dict = Depends(get_current_user)):
     """Trigger forecaster to generate a short-term forecast for the user (default 7 days)."""
     try:
-        result = await forecaster.generate_forecast(current_user["id"], days)
+        from agents.forecaster import ForecasterAgent
+        from core.simple_jarvis_db import SimpleJarvisDB
+        
+        # Run the forecaster (synchronous)
+        db = SimpleJarvisDB()
+        agent = ForecasterAgent(db=db)
+        result = agent.process({'user_id': current_user["id"]})
+        
         return {"message": "Forecast generated", "forecast": result}
     except Exception as e:
         logger.error(f"Failed to generate forecast: {e}")
@@ -708,40 +919,13 @@ async def rate_intervention(
             detail=f"Failed to rate intervention: {str(e)}"
         )
 
-# ==================== WORKFLOW ORCHESTRATION ENDPOINTS (DAY 5) ====================
+# ==================== WORKFLOW ORCHESTRATION ENDPOINTS ====================
+# NOTE: Orchestrator removed - workflows now handled by Celery tasks
+# Use Celery endpoints below to trigger agent workflows
 
-@app.post("/api/workflow/daily")
-async def run_daily_workflow_endpoint(current_user: dict = Depends(get_current_user)):
-    """Trigger the daily workflow for the current user (pattern detection + forecast + interventions)."""
-    from agents.orchestrator import orchestrator
-    
-    try:
-        result = await orchestrator.run_daily_workflow(current_user["id"])
-        return {
-            "message": "Daily workflow completed",
-            "result": result
-        }
-    except Exception as e:
-        logger.error(f"Failed to run daily workflow: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to run daily workflow: {str(e)}"
-        )
-
-@app.get("/api/workflow/status")
-async def get_workflow_status_endpoint(current_user: dict = Depends(get_current_user)):
-    """Get the status of the last workflow execution for the current user."""
-    from agents.orchestrator import orchestrator
-    
-    try:
-        status_info = orchestrator.get_workflow_status(current_user["id"])
-        return status_info
-    except Exception as e:
-        logger.error(f"Failed to get workflow status: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get workflow status: {str(e)}"
-        )
+# Orchestrator endpoints removed - use Celery tasks instead:
+# - POST /api/celery/run-all-agents - Run all agents for user
+# - POST /api/celery/analyze-user - Run single user analysis
 
 # ==================== OLD ENDPOINTS (TO BE REMOVED) ====================
 
@@ -842,17 +1026,19 @@ async def trigger_daily_workflow(current_user: dict = Depends(get_current_user))
     Pattern: Fire-and-forget with task_id response
     """
     try:
-        task = daily_workflow_task.delay(current_user["id"])
-        logger.info(f"Manually triggered daily workflow task {task.id} for user {current_user['id']}")
+        from celery_tasks import run_single_user_analysis
+        
+        task = run_single_user_analysis.delay(current_user["id"])
+        logger.info(f"Manually triggered analysis task {task.id} for user {current_user['id']}")
         
         return {
-            "message": "Daily workflow queued successfully",
+            "message": "User analysis queued successfully",
             "task_id": task.id,
             "user_id": current_user["id"]
         }
         
     except Exception as e:
-        logger.error(f"Failed to trigger daily workflow: {e}")
+        logger.error(f"Failed to trigger user analysis: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to trigger workflow: {str(e)}"
@@ -862,23 +1048,25 @@ async def trigger_daily_workflow(current_user: dict = Depends(get_current_user))
 @app.post("/api/tasks/trigger/detect-patterns")
 async def trigger_pattern_detection(current_user: dict = Depends(get_current_user)):
     """
-    Manually trigger pattern detection for all active users
-    (Normally runs automatically every 6 hours via Celery Beat)
+    Manually trigger insight generation for all active users
+    (Normally runs automatically daily at 2am via Celery Beat)
     
     Requires admin privileges in production
     Pattern: Fire-and-forget
     """
     try:
-        task = detect_patterns_all_users_task.delay()
-        logger.info(f"Manually triggered pattern detection task {task.id}")
+        from celery_tasks import run_insight_generator
+        
+        task = run_insight_generator.delay()
+        logger.info(f"Manually triggered insight generation task {task.id}")
         
         return {
-            "message": "Pattern detection queued for all users",
+            "message": "Insight generation queued for all users",
             "task_id": task.id
         }
         
     except Exception as e:
-        logger.error(f"Failed to trigger pattern detection: {e}")
+        logger.error(f"Failed to trigger insight generation: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to trigger pattern detection: {str(e)}"
@@ -889,13 +1077,15 @@ async def trigger_pattern_detection(current_user: dict = Depends(get_current_use
 async def trigger_forecast_generation(current_user: dict = Depends(get_current_user)):
     """
     Manually trigger forecast generation for all active users
-    (Normally runs automatically at 1am daily via Celery Beat)
+    (Normally runs automatically daily at 2:10am via Celery Beat)
     
     Requires admin privileges in production
     Pattern: Fire-and-forget
     """
     try:
-        task = generate_forecasts_all_users_task.delay()
+        from celery_tasks import run_forecaster
+        
+        task = run_forecaster.delay()
         logger.info(f"Manually triggered forecast generation task {task.id}")
         
         return {
