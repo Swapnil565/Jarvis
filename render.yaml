@@ -176,9 +176,8 @@ databases:
   # Redis (Message Broker & Cache)
   # ===========================================================================
   - name: jarvis-redis
-    plan: free  # 25MB free tier
-    maxmemoryPolicy: noeviction  # Don't evict data when full
-    ipAllowList: []  # Allow all IPs (change in production)
+    plan: free
+    ipAllowList: []
 
 # =============================================================================
 # DEPLOYMENT INSTRUCTIONS
