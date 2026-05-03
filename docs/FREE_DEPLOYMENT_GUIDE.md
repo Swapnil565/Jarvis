@@ -211,7 +211,7 @@ SECRET_KEY=your-super-secret-production-key-here-min-32-chars
 
 JWT_SECRET_KEY=your-jwt-secret-production-key-here-min-32-chars
 
-CEREBRAS_API_KEY=csk-44c3n6nehvh63vmw4r3n8hmkr5hx6pcdrdtt6fnem3cetpeh
+CEREBRAS_API_KEY=YOUR_CEREBRAS_API_KEY
 
 GEMINI_API_KEY=YOUR_GEMINI_API_KEY
 
