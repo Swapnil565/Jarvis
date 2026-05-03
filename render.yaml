@@ -171,11 +171,11 @@ services:
           name: jarvis-redis
           property: connectionString
 
-databases:
   # ===========================================================================
   # Redis (Message Broker & Cache)
   # ===========================================================================
-  - name: jarvis-redis
+  - type: redis
+    name: jarvis-redis
     plan: free
     ipAllowList: []
 
