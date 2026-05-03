@@ -1,0 +1,28 @@
+# Environment - NEVER commit these
+.env
+.env.*
+!.env.example
+!.env.prod.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+*.egg-info/
+
+# Logs
+logs/
+*.log
+
+# DB files
+*.db
+*.sqlite3
+
+# Docker volumes
+postgres_data/
+
+# OS
+.DS_Store
+Thumbs.db
