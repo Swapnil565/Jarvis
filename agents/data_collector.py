@@ -195,6 +195,7 @@ Output: {"dimension": "mental", "type": "task", "data": {"title": "3 tasks", "co
         try:
             import os
             import google.generativeai as genai
+            from google.generativeai.types import HarmCategory, HarmBlockThreshold
             
             # Configure Google Gemini API
             gemini_key = os.getenv("GEMINI_API_KEY")
@@ -202,18 +203,28 @@ Output: {"dimension": "mental", "type": "task", "data": {"title": "3 tasks", "co
                 raise ValueError("GEMINI_API_KEY not found in environment")
             
             genai.configure(api_key=gemini_key)
+            
+            # VEKTOR FIX F-001: Completely disable safety filters for testing
+            # Using proper HarmBlockThreshold enum to ensure filters are actually disabled
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+            
             model = genai.GenerativeModel(
                 'models/gemini-2.5-flash',
-                safety_settings={
-                    'HARASSMENT': 'block_none',
-                    'HATE_SPEECH': 'block_none',
-                    'SEXUALLY_EXPLICIT': 'block_none',
-                    'DANGEROUS_CONTENT': 'block_none'
-                }
+                safety_settings=safety_settings
             )  
             
             # Construct prompt
             full_prompt = f"{self.system_prompt}\n\nUser input: {raw_input}\n\nYour response (JSON only):"
+            
+            # VEKTOR DEBUG: Log the exact prompt being sent to LLM
+            print("=== PROMPT SENT TO LLM ===")
+            print(full_prompt)
+            print("==========================")
             
             # Generate response
             response = model.generate_content(
@@ -267,6 +278,54 @@ Output: {"dimension": "mental", "type": "task", "data": {"title": "3 tasks", "co
         
         except Exception as e:
             return self.handle_error(e, "Data collection failed")
+
+    async def invoke_raw(self, raw_input: str) -> str:
+        """
+        Send raw input directly to the LLM and return plain text response.
+
+        This path intentionally avoids JSON parsing of the prompt and response,
+        so malformed/injection-style payloads can still be analyzed by the model.
+        """
+        try:
+            import os
+            import google.generativeai as genai
+            from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if not gemini_key:
+                raise ValueError("GEMINI_API_KEY not found in environment")
+
+            genai.configure(api_key=gemini_key)
+
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            model = genai.GenerativeModel(
+                'models/gemini-2.5-flash',
+                safety_settings=safety_settings
+            )
+
+            response = model.generate_content(
+                raw_input,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.0,
+                    max_output_tokens=300
+                )
+            )
+
+            if not response.candidates or not response.text:
+                self.logger.warning(f"Raw invoke blocked/empty: {response.prompt_feedback}")
+                return "Model response unavailable"
+
+            return response.text.strip()
+
+        except Exception as e:
+            self.logger.error(f"Raw invoke failed: {e}")
+            return "Model unavailable"
     
     def parse_sync(self, raw_input: str) -> Dict[str, Any]:
         """Synchronous version of parse for non-async contexts"""
