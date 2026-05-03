@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jarvis-api
+  labels:
+    app: jarvis-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jarvis-api
+  template:
+    metadata:
+      labels:
+        app: jarvis-api
+    spec:
+      containers:
+        - name: jarvis-api
+          image: jarvis-api:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          env:
+            - name: REDIS_URL
+              value: "redis://jarvis-redis:6379/0"
+            - name: CELERY_BROKER_URL
+              value: "redis://jarvis-redis:6379/1"
+            - name: CELERY_RESULT_BACKEND
+              value: "redis://jarvis-redis:6379/2"
+            - name: JARVIS_ENV
+              value: "production"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jarvis-redis
+  labels:
+    app: jarvis-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jarvis-redis
+  template:
+    metadata:
+      labels:
+        app: jarvis-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          command: ["redis-server", "--appendonly", "yes"]

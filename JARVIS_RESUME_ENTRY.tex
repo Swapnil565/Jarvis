@@ -1,0 +1,58 @@
+% JARVIS 3.0 - Personal Health & Productivity Monitoring System
+% LaTeX Resume Entry
+
+\resumeProjectHeading
+{\textbf{JARVIS 3.0} $|$ \emph{FastAPI, Celery, Redis, SQLite, Python}}{May 2024 -- Present}
+\resumeItemListStart
+
+\resumeItem{Built \textbf{dynamic correlation detection engine} analyzing all metric pairs (10 inputs × 9 outputs = 90 combinations) using Pearson correlation coefficient, replacing hardcoded rules with data-driven pattern discovery; filters insights by correlation $\geq$ 0.3 and predicted improvement $\geq$ 20\%, reducing noise while surfacing actionable behavioral patterns}
+
+\resumeItem{Implemented \textbf{multi-output correlation tracking} where single input metrics (e.g., workout intensity) simultaneously correlate with 3+ output metrics (task completion rate, energy levels, mood scores), enabling detection of complex behavioral cascades that traditional single-pair analysis would miss}
+
+\resumeItem{Designed \textbf{composite burnout prediction model} using 4-factor weighted sum: CNS fatigue (25\%), work pressure (30\%), recovery deficit (25\%), sleep debt (20\%), outputting 0-100\% risk score; outperforms single-metric approaches by capturing physiological, cognitive, and recovery dimensions simultaneously}
+
+\resumeItem{Created \textbf{categorical 7-day forecasting system} with 5-tier burnout risk classification (optimal/manageable/moderate/high/critical) using historical pattern analysis and current energy debt trends, converting continuous predictions into discrete actionable categories for better user decision-making}
+
+\resumeItem{Deployed \textbf{production Celery + Redis task queue} managing 3 async agents with daily 2am scheduling, exponential backoff retry (3 attempts, 60s base delay), rotating file logs (10MB limit, 5 backups), and Flower monitoring; replaced monolithic orchestrator with distributed task architecture, reducing coupling and enabling independent agent scaling}
+
+\resumeItem{Developed \textbf{FastAPI REST API with 22 endpoints} across authentication, events, insights, forecasting, and interventions; refactored from async to sync agent calls after eliminating orchestrator dependency, achieving zero import errors and clean separation between API layer and agent execution layer}
+
+\resumeItem{Validated end-to-end pipeline with \textbf{274 synthetic events} (30 days, 3 event types), generating 3 quality-filtered insights from larger correlation set, 7-day forecast (7.9\% baseline energy debt), and 1 intervention recommendation; demonstrates complete data flow: events → aggregation → correlation → prediction → intervention}
+
+\resumeItemListEnd
+
+% ALTERNATIVE VERSION (More Concise - 5 bullets):
+% 
+% \resumeProjectHeading
+% {\textbf{JARVIS 3.0} $|$ \emph{FastAPI, Celery, Redis, SQLite, Python}}{May 2024 -- Present}
+% \resumeItemListStart
+% 
+% \resumeItem{Built \textbf{universal correlation engine} analyzing 90+ metric combinations (10 inputs × 9 outputs) with dynamic pattern detection replacing hardcoded rules, filtering insights by 30\%+ correlation strength and 20\%+ improvement potential using Pearson coefficients}
+% 
+% \resumeItem{Designed \textbf{multi-factor burnout prediction system} with 4-component energy debt formula (CNS fatigue, work pressure, recovery deficit, sleep debt) generating 7-day capacity forecasts categorized into 5 burnout risk levels (optimal → critical)}
+% 
+% \resumeItem{Architected \textbf{production Celery task orchestration} managing 3 independent agents via Redis broker with daily 2am scheduling, exponential backoff retry (3 attempts, 60s base), rotating logs (10MB/5 backups), and Flower monitoring UI}
+% 
+% \resumeItem{Developed \textbf{FastAPI REST API with 22 endpoints} across 8 domains (auth, events, insights, forecast) using JWT authentication, achieving zero-error synchronous architecture after refactoring from async agent design}
+% 
+% \resumeItem{Validated with \textbf{274 test events over 30 days}, successfully generating 3 quality-filtered insights, categorical 7-day forecasts (7.9\% energy debt), and interventions through complete event → insight → prediction → recommendation pipeline}
+% 
+% \resumeItemListEnd
+
+% METRICS SUMMARY:
+% - 22 API endpoints across 8 categories
+% - 3 independent agents (Insight, Forecast, Intervention)
+% - 90+ correlation combinations (10 inputs × 9 outputs)
+% - 30%+ correlation threshold for insights
+% - 20%+ improvement filter
+% - 4-factor energy debt formula
+% - 7-day forecast horizon
+% - 5-tier burnout classification
+% - 274 test events validated
+% - 3 insights generated (quality filtered)
+% - 7.9% baseline energy debt
+% - 10 sample minimum for statistical validity
+% - 3 retry attempts with exponential backoff
+% - 60s base retry delay
+% - 10MB log rotation with 5 backups
+% - Daily 2am scheduling (2:00, 2:10, 2:20 for each agent)
