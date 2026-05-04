@@ -178,6 +178,37 @@ class SimpleDB:
         except Exception as e:
             return {"error": str(e)}
     
+    def get_connection(self):
+        """Return a raw sqlite3 connection (caller must close)"""
+        conn = sqlite3.connect(self.db_path)
+        return conn
+
+    def get_user_by_email(self, email: str) -> Optional[dict]:
+        """Get user by email address"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, email, username, full_name, is_active, is_verified, is_premium, created_at
+                FROM users WHERE email = ?
+            """, (email,))
+            user = cursor.fetchone()
+            conn.close()
+            if user:
+                return {
+                    "id": user[0],
+                    "email": user[1],
+                    "username": user[2],
+                    "full_name": user[3],
+                    "is_active": bool(user[4]),
+                    "is_verified": bool(user[5]),
+                    "is_premium": bool(user[6]),
+                    "created_at": user[7],
+                }
+            return None
+        except Exception as e:
+            return {"error": str(e)}
+
     def get_user_by_id(self, user_id: int) -> Optional[dict]:
         """Get user by ID"""
         try:

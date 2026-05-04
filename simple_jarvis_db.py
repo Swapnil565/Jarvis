@@ -451,6 +451,95 @@ class SimpleJarvisDB:
                 "unread_interventions": unread_interventions
             }
     
+    def get_pending_interventions(self, user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get unacknowledged interventions (alias used by main endpoints)"""
+        query = """
+            SELECT * FROM interventions
+            WHERE user_id = ? AND acknowledged_at IS NULL
+            ORDER BY created_at DESC LIMIT ?
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (user_id, limit))
+            rows = cursor.fetchall()
+            return [self._row_to_dict(row, parse_data=True) for row in rows]
+
+    def add_intervention_feedback(self, intervention_id: int, user_id: int,
+                                  rating: int, was_helpful: bool) -> bool:
+        """Alias for rate_intervention (used by main endpoints)"""
+        return self.rate_intervention(intervention_id, user_id, rating, was_helpful)
+
+    def snooze_intervention(self, intervention_id: int, user_id: int, snooze_until: str) -> bool:
+        """Store snooze timestamp in the data JSON field"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT data FROM interventions WHERE id = ? AND user_id = ?",
+                           (intervention_id, user_id))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            try:
+                data = json.loads(row['data'] or '{}')
+            except Exception:
+                data = {}
+            data['snoozedUntil'] = snooze_until
+            cursor.execute(
+                "UPDATE interventions SET data = ? WHERE id = ? AND user_id = ?",
+                (json.dumps(data), intervention_id, user_id)
+            )
+            return cursor.rowcount > 0
+
+    # ==================== SETTINGS OPERATIONS ====================
+
+    def init_settings_table(self):
+        """Create user_settings table if it doesn't exist"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id INTEGER PRIMARY KEY,
+                    settings TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
+    def get_settings(self, user_id: int) -> Dict[str, Any]:
+        """Get user settings, returning defaults if not set"""
+        self.init_settings_table()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT settings FROM user_settings WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            if row:
+                try:
+                    return json.loads(row['settings'])
+                except Exception:
+                    return {}
+            return {}
+
+    def save_settings(self, user_id: int, settings: Dict[str, Any]) -> bool:
+        """Upsert user settings"""
+        self.init_settings_table()
+        timestamp = datetime.utcnow().isoformat()
+        settings_json = json.dumps(settings)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO user_settings (user_id, settings, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at
+            """, (user_id, settings_json, timestamp))
+            return True
+
+    def delete_user_data(self, user_id: int) -> bool:
+        """Delete all event data for a user (settings/account management)"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM events WHERE user_id = ?", (user_id,))
+            cursor.execute("DELETE FROM patterns WHERE user_id = ?", (user_id,))
+            cursor.execute("DELETE FROM interventions WHERE user_id = ?", (user_id,))
+            return True
+
     def create_performance_indexes(self):
         """Create Day 7 performance indexes"""
         import logging

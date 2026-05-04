@@ -70,7 +70,9 @@ KEY ENDPOINTS:
 
 import time
 import logging
-from typing import Dict, Any, Optional
+import copy
+from datetime import datetime
+from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, HTTPException, status, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -319,35 +321,100 @@ async def create_log_entry(entry: LogEntryRequest, current_user: dict = Depends(
 async def get_dashboard(current_user: dict = Depends(get_current_user)):
     """Aggregate dashboard data for frontend"""
     try:
-        # Get stats
+        from datetime import timedelta
+
         stats = jarvis_db.get_stats(current_user["id"])
-        
-        # Get today's breakdown (simplified version of get_today_status)
         today_events = jarvis_db.get_events_today(current_user["id"])
-        
-        physical_status = "good"
-        mental_status = "good"
-        spiritual_status = "good"
-        
-        # Simple heuristic for status
+
         p_count = sum(1 for e in today_events if e['category'] == 'physical')
         m_count = sum(1 for e in today_events if e['category'] == 'mental')
         s_count = sum(1 for e in today_events if e['category'] == 'spiritual')
-        
-        if p_count == 0: physical_status = "warning"
-        if m_count == 0: mental_status = "warning"
-        if s_count == 0: spiritual_status = "warning"
+
+        def _score_for(events, cat):
+            cat_events = [e for e in events if e['category'] == cat]
+            if not cat_events:
+                return 4.0
+            # Average score stored in data.score, fallback to 6.0
+            scores = []
+            for e in cat_events:
+                d = e.get('data') or {}
+                if isinstance(d, dict):
+                    s = d.get('score') or d.get('value') or d.get('energy_level')
+                    if s is not None:
+                        try:
+                            scores.append(float(s))
+                        except Exception:
+                            pass
+            return round(sum(scores) / len(scores), 1) if scores else 6.5
+
+        def _insight_for(cat, count):
+            if count == 0:
+                return {"physical": "No activity logged today.", "mental": "No mental work logged today.", "spiritual": "No mindfulness logged today."}.get(cat, "")
+            return {"physical": "Keep up the momentum!", "mental": "Great focus today.", "spiritual": "Finding your balance."}.get(cat, "")
+
+        # Compute streak from distinct days with events
+        current_streak = 0
+        longest_streak = 0
+        with jarvis_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT date(timestamp) as day
+                FROM events WHERE user_id = ?
+                ORDER BY day DESC
+            """, (current_user["id"],))
+            days = [r[0] for r in cursor.fetchall()]
+
+        if days:
+            today = datetime.utcnow().date()
+            streak = 0
+            check = today
+            for d in days:
+                day_date = datetime.strptime(d, "%Y-%m-%d").date()
+                if day_date == check or day_date == check - timedelta(days=1):
+                    streak += 1
+                    check = day_date - timedelta(days=1)
+                else:
+                    break
+            current_streak = streak
+            # Longest streak
+            max_s, cur_s = 1, 1
+            for i in range(1, len(days)):
+                a = datetime.strptime(days[i-1], "%Y-%m-%d").date()
+                b = datetime.strptime(days[i], "%Y-%m-%d").date()
+                if (a - b).days == 1:
+                    cur_s += 1
+                    max_s = max(max_s, cur_s)
+                else:
+                    cur_s = 1
+            longest_streak = max(current_streak, max_s)
+
+        all_recent = jarvis_db.get_events(current_user["id"], limit=200)
 
         dimensions = [
-            {"dimension": "physical", "status": physical_status, "score": 75 if p_count > 0 else 40, "insight": "Keep moving!"},
-            {"dimension": "mental", "status": mental_status, "score": 80 if m_count > 0 else 50, "insight": "Stay sharp."},
-            {"dimension": "spiritual", "status": spiritual_status, "score": 90 if s_count > 0 else 60, "insight": "Finding balance."}
+            {
+                "dimension": "physical",
+                "status": "good" if p_count > 0 else "warning",
+                "score": _score_for(all_recent, "physical"),
+                "insight": _insight_for("physical", p_count)
+            },
+            {
+                "dimension": "mental",
+                "status": "good" if m_count > 0 else "warning",
+                "score": _score_for(all_recent, "mental"),
+                "insight": _insight_for("mental", m_count)
+            },
+            {
+                "dimension": "spiritual",
+                "status": "good" if s_count > 0 else "warning",
+                "score": _score_for(all_recent, "spiritual"),
+                "insight": _insight_for("spiritual", s_count)
+            },
         ]
-        
+
         return {
             "dimensions": dimensions,
-            "currentStreak": 3, # Placeholder - needs real calculation from DB
-            "longestStreak": 5, 
+            "currentStreak": current_streak,
+            "longestStreak": longest_streak,
             "hasNewInsights": stats.get('active_patterns', 0) > 0,
             "hasActiveInterventions": stats.get('unread_interventions', 0) > 0
         }
@@ -359,28 +426,26 @@ async def get_dashboard(current_user: dict = Depends(get_current_user)):
 async def get_frontend_patterns(dimension: Optional[str] = None, type: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Frontend-compatible patterns endpoint"""
     try:
-        from core.simple_jarvis_db import SimpleJarvisDB
-        db = SimpleJarvisDB()
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, description, pattern_type, confidence, data FROM patterns WHERE user_id = ?", (current_user["id"],))
-            rows = cursor.fetchall()
-            
-            results = []
-            for row in rows:
-                results.append({
-                    "id": str(row[0]),
-                    "title": row[1].split('.')[0] if row[1] else "Pattern Detected",
-                    "dimension": "physical", # Default, ideally stored in DB
-                    "type": "watch" if row[3] < 0.8 else "strength",
-                    "confidence": row[3],
-                    "discovered": "2023-01-01", # Placeholder
-                    "pattern": row[1],
-                    "evidence": ["Data point A", "Data point B"],
-                    "whyItMatters": "High correlation detected",
-                    "suggestion": "Keep it up"
-                })
-            return results
+        patterns = jarvis_db.get_patterns(current_user["id"], active_only=True)
+        results = []
+        for p in patterns:
+            data = p.get('data') or {}
+            pat_dim = data.get('dimension', dimension or 'physical')
+            pat_type = data.get('type', 'strength' if p.get('confidence', 0) >= 0.8 else 'watch')
+            results.append({
+                "id": str(p['id']),
+                "title": (p.get('description') or 'Pattern Detected').split('.')[0][:60],
+                "dimension": pat_dim,
+                "type": pat_type,
+                "confidence": round(p.get('confidence', 0.7), 2),
+                "discovered": p.get('first_detected', p.get('last_seen', '')),
+                "pattern": p.get('description', ''),
+                "evidence": data.get('evidence', []),
+                "whyItMatters": data.get('whyItMatters', 'Detected recurring correlation in your data.'),
+                "suggestion": data.get('suggestion', 'Keep tracking to strengthen this pattern.'),
+                "frequency": p.get('frequency', 1),
+            })
+        return results
     except Exception as e:
         logger.error(f"Patterns error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -399,7 +464,7 @@ async def get_active_interventions_frontend(current_user: dict = Depends(get_cur
 
 @app.post("/api/interventions/{id}/dismiss")
 async def dismiss_intervention_frontend(id: int, action: Optional[Dict[str, Any]] = None, current_user: dict = Depends(get_current_user)):
-    jarvis_db.mark_intervention_delivered(id)
+    jarvis_db.mark_intervention_delivered(id, current_user["id"])
     return {"success": True}
 
 # ==================== EVENT ENDPOINTS ====================
@@ -737,30 +802,11 @@ async def quick_tap_event(
 
 @app.get("/api/stats")
 async def get_user_stats(current_user: dict = Depends(get_current_user)):
-    """
-    Get user statistics
-    Requires authentication
-    DAY 7: Cached for 5 minutes (300s) for 100x faster response
-    """
+    """Get user statistics"""
     user_id = current_user["id"]
-    cache_key = f"stats:user:{user_id}"
-    
     try:
-        # DAY 7: Check cache first
-        cached = cache_get(cache_key)
-        if cached:
-            logger.info(f"✅ Cache HIT for stats:user:{user_id}")
-            return cached
-        
-        # Cache miss - query database
-        logger.info(f"❌ Cache MISS for stats:user:{user_id}")
         stats = jarvis_db.get_stats(user_id=user_id)
-        
-        # Store in cache for 5 minutes
-        cache_set(cache_key, stats, ttl=300)
-        
         return stats
-        
     except Exception as e:
         logger.error(f"Failed to get stats: {e}")
         raise HTTPException(
@@ -807,45 +853,10 @@ def generate_insights(
 
 @app.get("/api/insights")
 def get_insights(current_user: dict = Depends(get_current_user)):
-    """
-    Get existing insights/patterns for the authenticated user.
-    Returns all patterns from the database.
-    """
+    """Get existing insights/patterns for the authenticated user."""
     try:
-        from core.simple_jarvis_db import SimpleJarvisDB
-        
-        db = SimpleJarvisDB()
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, input_metric, output_metric, correlation, 
-                       improvement, first_seen, last_seen, occurrence_count, details
-                FROM patterns
-                WHERE user_id = ?
-                ORDER BY last_seen DESC
-            """, (current_user["id"],))
-            
-            rows = cursor.fetchall()
-            
-            insights = []
-            for row in rows:
-                insights.append({
-                    "id": row[0],
-                    "input_metric": row[1],
-                    "output_metric": row[2],
-                    "correlation": row[3],
-                    "improvement": row[4],
-                    "first_seen": row[5],
-                    "last_seen": row[6],
-                    "occurrence_count": row[7],
-                    "details": row[8]
-                })
-            
-            return {
-                "insights": insights,
-                "count": len(insights)
-            }
-    
+        patterns = jarvis_db.get_patterns(current_user["id"], active_only=False)
+        return {"insights": patterns, "count": len(patterns)}
     except Exception as e:
         logger.error(f"Failed to get insights: {e}")
         raise HTTPException(
@@ -921,7 +932,7 @@ async def get_interventions(current_user: dict = Depends(get_current_user)):
 async def acknowledge_intervention(intervention_id: int, current_user: dict = Depends(get_current_user)):
     """Mark an intervention as acknowledged by the user."""
     try:
-        jarvis_db.mark_intervention_delivered(intervention_id)
+        jarvis_db.mark_intervention_delivered(intervention_id, current_user["id"])
         return {"message": "Intervention acknowledged", "intervention_id": intervention_id}
     except Exception as e:
         logger.error(f"Failed to acknowledge intervention: {e}")
@@ -944,8 +955,7 @@ async def rate_intervention(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Rating must be between 1 and 5"
             )
-        
-        jarvis_db.add_intervention_feedback(intervention_id, rating, was_helpful)
+        jarvis_db.add_intervention_feedback(intervention_id, current_user["id"], rating, was_helpful)
         return {
             "message": "Feedback recorded",
             "intervention_id": intervention_id,
@@ -1178,6 +1188,526 @@ async def celery_health_check():
             "error": str(e),
             "message": "Celery not available (workers not running or Redis not connected)"
         }
+
+
+# ==================== SNOOZE INTERVENTION ====================
+
+@app.post("/api/interventions/{id}/snooze")
+async def snooze_intervention_endpoint(id: int, body: Optional[Dict[str, Any]] = None, current_user: dict = Depends(get_current_user)):
+    """Snooze an intervention until a given time"""
+    snooze_until = (body or {}).get("snoozeUntil", "")
+    if not snooze_until:
+        from datetime import timedelta
+        snooze_until = (datetime.utcnow() + timedelta(hours=8)).isoformat()
+    jarvis_db.snooze_intervention(id, current_user["id"], snooze_until)
+    return {"success": True, "snoozedUntil": snooze_until}
+
+# ==================== PROGRESS ENDPOINTS ====================
+
+@app.get("/api/progress/trends/{dimension}")
+async def get_progress_trends(dimension: str, days: int = 30, current_user: dict = Depends(get_current_user)):
+    """Return daily score datapoints for a dimension over the last N days"""
+    try:
+        from datetime import timedelta
+        user_id = current_user["id"]
+        date_from = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        events = jarvis_db.get_events(user_id, category=dimension, date_from=date_from, limit=500)
+
+        # Group events by date and average their scores
+        from collections import defaultdict
+        daily: Dict[str, list] = defaultdict(list)
+        for e in events:
+            day = (e.get('timestamp') or '')[:10]
+            if not day:
+                continue
+            d = e.get('data') or {}
+            if isinstance(d, dict):
+                s = d.get('score') or d.get('value') or d.get('energy_level')
+                if s is not None:
+                    try:
+                        daily[day].append(float(s))
+                    except Exception:
+                        pass
+
+        data_points = []
+        for day, scores in sorted(daily.items()):
+            data_points.append({"date": day, "value": round(sum(scores) / len(scores), 1), "dimension": dimension})
+
+        if not data_points:
+            # Return neutral line if no data
+            for i in range(days):
+                d = (datetime.utcnow() - timedelta(days=days - i)).date().isoformat()
+                data_points.append({"date": d, "value": 5.0, "dimension": dimension})
+
+        current_score = data_points[-1]["value"] if data_points else 5.0
+        week_ago = data_points[-7]["value"] if len(data_points) >= 7 else data_points[0]["value"] if data_points else 5.0
+        month_ago = data_points[0]["value"] if data_points else 5.0
+        week_change = round(((current_score - week_ago) / week_ago) * 100, 1) if week_ago else 0
+        month_change = round(((current_score - month_ago) / month_ago) * 100, 1) if month_ago else 0
+        trend = "improving" if week_change > 2 else ("declining" if week_change < -2 else "stable")
+
+        return {
+            "dimension": dimension,
+            "dataPoints": data_points,
+            "currentScore": current_score,
+            "weekChange": week_change,
+            "monthChange": month_change,
+            "trend": trend,
+        }
+    except Exception as e:
+        logger.error(f"Progress trends error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/progress/summaries")
+async def get_progress_summaries(weeks: int = 8, current_user: dict = Depends(get_current_user)):
+    """Return weekly summaries for the last N weeks"""
+    try:
+        from datetime import timedelta
+        from collections import defaultdict
+        user_id = current_user["id"]
+        date_from = (datetime.utcnow() - timedelta(weeks=weeks)).isoformat()
+        events = jarvis_db.get_events(user_id, date_from=date_from, limit=2000)
+
+        # Group events by ISO week
+        weekly: Dict[str, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
+        for e in events:
+            ts = e.get('timestamp', '')[:10]
+            if not ts:
+                continue
+            day = datetime.strptime(ts, "%Y-%m-%d").date()
+            week_start = (day - timedelta(days=day.weekday())).isoformat()
+            cat = e.get('category', 'mental')
+            d = e.get('data') or {}
+            if isinstance(d, dict):
+                s = d.get('score') or d.get('value') or d.get('energy_level')
+                if s is not None:
+                    try:
+                        weekly[week_start][cat].append(float(s))
+                    except Exception:
+                        pass
+
+        summaries = []
+        for week_start in sorted(weekly.keys()):
+            ws_date = datetime.strptime(week_start, "%Y-%m-%d").date()
+            we_date = ws_date + timedelta(days=6)
+            cats = weekly[week_start]
+
+            def _cat_summary(cat):
+                scores = cats.get(cat, [])
+                avg = round(sum(scores) / len(scores), 1) if scores else 0.0
+                return {"average": avg, "change": 0, "highlight": None, "lowlight": None}
+
+            summaries.append({
+                "weekStart": week_start,
+                "weekEnd": we_date.isoformat(),
+                "physical": _cat_summary("physical"),
+                "mental": _cat_summary("mental"),
+                "spiritual": _cat_summary("spiritual"),
+                "totalLogs": sum(len(v) for v in cats.values()),
+                "streakMaintained": all(len(cats.get(c, [])) > 0 for c in ["physical", "mental", "spiritual"]),
+            })
+
+        return list(reversed(summaries))
+    except Exception as e:
+        logger.error(f"Progress summaries error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/progress/patterns/historical")
+async def get_historical_patterns(current_user: dict = Depends(get_current_user)):
+    """Return all patterns including inactive ones"""
+    try:
+        patterns = jarvis_db.get_patterns(current_user["id"], active_only=False)
+        return patterns
+    except Exception as e:
+        logger.error(f"Historical patterns error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== SETTINGS & PROFILE ENDPOINTS ====================
+
+class SettingsPatch(BaseModel):
+    notifications: Optional[Dict[str, Any]] = None
+    privacy: Optional[Dict[str, Any]] = None
+    preferences: Optional[Dict[str, Any]] = None
+    profile: Optional[Dict[str, Any]] = None
+
+DEFAULT_SETTINGS = {
+    "notifications": {
+        "interventions": True,
+        "weeklyInsights": True,
+        "streakReminders": True,
+        "quietHoursStart": "22:00",
+        "quietHoursEnd": "07:00"
+    },
+    "privacy": {
+        "shareAnonymousData": False,
+        "localStorageOnly": True
+    },
+    "preferences": {
+        "theme": "dark",
+        "units": "metric",
+        "weekStartsOn": "monday"
+    }
+}
+
+@app.get("/api/settings")
+async def get_settings(current_user: dict = Depends(get_current_user)):
+    """Get user settings"""
+    try:
+        saved = jarvis_db.get_settings(current_user["id"])
+        # Deep merge saved over defaults
+        result = copy.deepcopy(DEFAULT_SETTINGS)
+        for k, v in saved.items():
+            if isinstance(v, dict) and isinstance(result.get(k), dict):
+                result[k].update(v)
+            else:
+                result[k] = v
+        return result
+    except Exception as e:
+        logger.error(f"Settings get error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/api/settings")
+async def update_settings(patch: SettingsPatch, current_user: dict = Depends(get_current_user)):
+    """Patch user settings"""
+    try:
+        existing = jarvis_db.get_settings(current_user["id"])
+        update = patch.dict(exclude_none=True)
+        for k, v in update.items():
+            if isinstance(v, dict) and isinstance(existing.get(k), dict):
+                existing[k].update(v)
+            else:
+                existing[k] = v
+        jarvis_db.save_settings(current_user["id"], existing)
+        return existing
+    except Exception as e:
+        logger.error(f"Settings patch error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/profile")
+async def get_profile(current_user: dict = Depends(get_current_user)):
+    """Get user profile with stats"""
+    try:
+        from simple_db import SimpleDB
+        user_db = SimpleDB()
+        user = user_db.get_user_by_id(current_user["id"])
+        stats = jarvis_db.get_stats(current_user["id"])
+
+        # Compute streak
+        current_streak = 0
+        from datetime import timedelta
+        with jarvis_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT date(timestamp) as day
+                FROM events WHERE user_id = ?
+                ORDER BY day DESC
+            """, (current_user["id"],))
+            days = [r[0] for r in cursor.fetchall()]
+        if days:
+            today = datetime.utcnow().date()
+            check = today
+            for d in days:
+                day_date = datetime.strptime(d, "%Y-%m-%d").date()
+                if day_date == check or day_date == check - timedelta(days=1):
+                    current_streak += 1
+                    check = day_date - timedelta(days=1)
+                else:
+                    break
+
+        return {
+            "name": (user or {}).get("full_name") or (user or {}).get("username") or "User",
+            "email": current_user.get("email", ""),
+            "totalLogs": stats.get("total_events", 0),
+            "currentStreak": current_streak,
+            "longestStreak": current_streak,  # Approximation; full calc in dashboard
+            "memberSince": (user or {}).get("created_at", ""),
+        }
+    except Exception as e:
+        logger.error(f"Profile error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== DATA MANAGEMENT ENDPOINTS ====================
+
+@app.post("/api/data/export")
+async def export_data(current_user: dict = Depends(get_current_user)):
+    """Export all user data as JSON"""
+    try:
+        events = jarvis_db.get_events(current_user["id"], limit=10000)
+        patterns = jarvis_db.get_patterns(current_user["id"], active_only=False)
+        interventions = jarvis_db.get_interventions(current_user["id"], limit=1000)
+        settings = jarvis_db.get_settings(current_user["id"])
+        return {
+            "exported_at": datetime.utcnow().isoformat(),
+            "user_id": current_user["id"],
+            "events": events,
+            "patterns": patterns,
+            "interventions": interventions,
+            "settings": settings,
+        }
+    except Exception as e:
+        logger.error(f"Data export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/data/clear")
+async def clear_data(current_user: dict = Depends(get_current_user)):
+    """Delete all event/pattern/intervention data for this user"""
+    try:
+        jarvis_db.delete_user_data(current_user["id"])
+        return {"success": True, "message": "All data cleared."}
+    except Exception as e:
+        logger.error(f"Data clear error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/account/delete")
+async def delete_account(current_user: dict = Depends(get_current_user)):
+    """Delete user account and all associated data"""
+    try:
+        from simple_db import SimpleDB
+        jarvis_db.delete_user_data(current_user["id"])
+        user_db = SimpleDB()
+        with user_db.get_connection() as conn:
+            conn.execute("DELETE FROM users WHERE id = ?", (current_user["id"],))
+        return {"success": True, "message": "Account deleted."}
+    except Exception as e:
+        logger.error(f"Account delete error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== SEED DEMO DATA ENDPOINT ====================
+
+@app.post("/api/seed")
+async def seed_demo_data():
+    """
+    Create or reset a demo user (demo@jarvis.app / Jarvis2025!) with 30 days
+    of synthetic events, patterns, and interventions. Safe to call repeatedly.
+    """
+    try:
+        from simple_db import SimpleDB
+        from datetime import timedelta
+        import random
+
+        user_db = SimpleDB()
+        demo_email = "demo@jarvis.app"
+        demo_password = "Jarvis2025!"
+
+        # Create or fetch demo user
+        existing = user_db.get_user_by_email(demo_email)
+        if existing and "error" not in existing:
+            user_id = existing["id"]
+            # Wipe old event data for a clean seed
+            jarvis_db.delete_user_data(user_id)
+        else:
+            new_user = user_db.create_user(
+                email=demo_email,
+                username="demo_jarvis",
+                password=demo_password,
+                full_name="Demo User",
+            )
+            if not new_user or "error" in new_user:
+                raise Exception(f"Could not create demo user: {new_user}")
+            user_id = new_user["id"]
+
+        now = datetime.utcnow()
+        random.seed(42)
+
+        # ----- 30 days of events -----
+        physical_types = ["workout", "run", "yoga", "walk", "gym"]
+        mental_types = ["deep_work", "reading", "study", "journaling", "task"]
+        spiritual_types = ["meditation", "breathwork", "gratitude", "reflection"]
+        feelings = ["energized", "good", "calm", "focused", "tired", "stressed"]
+
+        for day_offset in range(30, 0, -1):
+            day = now - timedelta(days=day_offset)
+            base_ts = day.replace(hour=7, minute=0, second=0, microsecond=0)
+
+            # Physical: almost every day, score trending up
+            if random.random() > 0.15:
+                score = round(5.0 + (30 - day_offset) * 0.08 + random.gauss(0, 0.5), 1)
+                score = max(2.0, min(10.0, score))
+                ts = (base_ts + timedelta(hours=random.randint(0, 2))).isoformat()
+                event_id = jarvis_db.create_event(
+                    user_id=user_id,
+                    category="physical",
+                    event_type=random.choice(physical_types),
+                    feeling=random.choice(feelings),
+                    data={"score": score, "duration_minutes": random.randint(20, 90), "notes": "Synthetic event"},
+                )
+                # Patch timestamp directly since create_event uses utcnow()
+                with jarvis_db.get_connection() as conn:
+                    conn.execute("UPDATE events SET timestamp = ? WHERE id = ?", (ts, event_id))
+
+            # Mental: every day
+            score = round(5.5 + (30 - day_offset) * 0.06 + random.gauss(0, 0.6), 1)
+            score = max(2.0, min(10.0, score))
+            ts = (base_ts + timedelta(hours=random.randint(3, 5))).isoformat()
+            event_id = jarvis_db.create_event(
+                user_id=user_id,
+                category="mental",
+                event_type=random.choice(mental_types),
+                feeling=random.choice(feelings),
+                data={"score": score, "focus_minutes": random.randint(30, 180)},
+            )
+            with jarvis_db.get_connection() as conn:
+                conn.execute("UPDATE events SET timestamp = ? WHERE id = ?", (ts, event_id))
+
+            # Spiritual: most days
+            if random.random() > 0.25:
+                score = round(6.0 + (30 - day_offset) * 0.05 + random.gauss(0, 0.4), 1)
+                score = max(3.0, min(10.0, score))
+                ts = (base_ts + timedelta(hours=random.randint(6, 8))).isoformat()
+                event_id = jarvis_db.create_event(
+                    user_id=user_id,
+                    category="spiritual",
+                    event_type=random.choice(spiritual_types),
+                    feeling=random.choice(["calm", "peaceful", "centered", "grateful"]),
+                    data={"score": score, "duration_minutes": random.randint(5, 30)},
+                )
+                with jarvis_db.get_connection() as conn:
+                    conn.execute("UPDATE events SET timestamp = ? WHERE id = ?", (ts, event_id))
+
+        # ----- 4 patterns -----
+        patterns_seed = [
+            {
+                "pattern_type": "correlation",
+                "description": "Morning workouts increase mental focus by 34% on the same day.",
+                "confidence": 0.91,
+                "data": {
+                    "dimension": "physical",
+                    "type": "strength",
+                    "evidence": ["Tracked across 24 days", "p < 0.01 correlation"],
+                    "whyItMatters": "Physical priming enhances cognitive performance throughout the day.",
+                    "suggestion": "Schedule important mental tasks in the 2 hours following your morning workout.",
+                },
+            },
+            {
+                "pattern_type": "trend",
+                "description": "Spiritual practice consistency has improved by 40% over the past month.",
+                "confidence": 0.85,
+                "data": {
+                    "dimension": "spiritual",
+                    "type": "strength",
+                    "evidence": ["22 out of 30 days logged", "Increasing streak length"],
+                    "whyItMatters": "Consistent mindfulness practice builds emotional resilience.",
+                    "suggestion": "Keep your meditation streak going — you're building a lasting habit.",
+                },
+            },
+            {
+                "pattern_type": "anomaly",
+                "description": "Mental scores dip on days without physical activity.",
+                "confidence": 0.78,
+                "data": {
+                    "dimension": "mental",
+                    "type": "watch",
+                    "evidence": ["Average mental score 5.1 vs 7.2 on rest days"],
+                    "whyItMatters": "Movement is a key lever for your cognitive state.",
+                    "suggestion": "Even a 15-minute walk on rest days can protect your mental performance.",
+                },
+            },
+            {
+                "pattern_type": "correlation",
+                "description": "High-focus work sessions correlate with better sleep quality indicators.",
+                "confidence": 0.72,
+                "data": {
+                    "dimension": "mental",
+                    "type": "strength",
+                    "evidence": ["Longer focus blocks → calmer evening entries"],
+                    "whyItMatters": "Purposeful work reduces cognitive arousal before sleep.",
+                    "suggestion": "Use time-blocking to protect your deep work sessions.",
+                },
+            },
+        ]
+        for p in patterns_seed:
+            jarvis_db.create_pattern(
+                user_id=user_id,
+                pattern_type=p["pattern_type"],
+                description=p["description"],
+                confidence=p["confidence"],
+                data=p["data"],
+            )
+
+        # ----- 5 interventions -----
+        interventions_seed = [
+            {
+                "intervention_type": "suggestion",
+                "urgency": "high",
+                "title": "Recovery Day Needed",
+                "message": "You've logged intense physical activity 5 days in a row. Your body needs rest to adapt and grow stronger.",
+                "data": {
+                    "reasoning": "Consecutive high-intensity sessions without rest increase injury risk and reduce performance gains.",
+                    "category": "rest",
+                    "priority": "high",
+                },
+            },
+            {
+                "intervention_type": "insight",
+                "urgency": "medium",
+                "title": "Mental Peak Window Detected",
+                "message": "Your focus scores peak between 9–11am. Block this time for your most important cognitive work.",
+                "data": {
+                    "reasoning": "Pattern analysis across 30 days shows consistent morning cognitive advantage.",
+                    "category": "work",
+                    "priority": "medium",
+                },
+            },
+            {
+                "intervention_type": "warning",
+                "urgency": "medium",
+                "title": "Spiritual Practice Gap",
+                "message": "You haven't logged any mindfulness or reflection in 3 days. Your streak is at risk.",
+                "data": {
+                    "reasoning": "Gaps in spiritual practice correlate with lower weekly wellness scores.",
+                    "category": "general",
+                    "priority": "medium",
+                },
+            },
+            {
+                "intervention_type": "suggestion",
+                "urgency": "low",
+                "title": "Social Connection Boost",
+                "message": "Consider scheduling a social activity this week. Your logs show isolated work patterns.",
+                "data": {
+                    "reasoning": "Social engagement is a key predictor of mental wellbeing.",
+                    "category": "social",
+                    "priority": "low",
+                },
+            },
+            {
+                "intervention_type": "forecast",
+                "urgency": "low",
+                "title": "Weekend Momentum Prediction",
+                "message": "Based on your patterns, you're on track for a high-performance weekend. Keep your morning routine intact.",
+                "data": {
+                    "reasoning": "Maintained weekday routines predict consistent weekend wellness scores.",
+                    "category": "movement",
+                    "priority": "low",
+                },
+            },
+        ]
+        for i in interventions_seed:
+            jarvis_db.create_intervention(
+                user_id=user_id,
+                intervention_type=i["intervention_type"],
+                urgency=i["urgency"],
+                title=i["title"],
+                message=i["message"],
+                data=i["data"],
+            )
+
+        return {
+            "success": True,
+            "message": "Demo data seeded successfully.",
+            "user_id": user_id,
+            "email": demo_email,
+            "password": demo_password,
+            "events_created": "~75 events across 30 days",
+            "patterns_created": len(patterns_seed),
+            "interventions_created": len(interventions_seed),
+        }
+
+    except Exception as e:
+        logger.error(f"Seed error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
