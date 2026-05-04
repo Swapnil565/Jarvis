@@ -65,13 +65,7 @@ from typing import Optional
 from datetime import datetime, timedelta
 import os
 
-try:
-    import jwt
-except ImportError:
-    print("PyJWT not installed. Installing...")
-    import subprocess
-    subprocess.check_call(["pip", "install", "PyJWT"])
-    import jwt
+import jwt
 
 # Import simple database
 from simple_db import db
